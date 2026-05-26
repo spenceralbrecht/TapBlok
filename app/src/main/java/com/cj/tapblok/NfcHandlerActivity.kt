@@ -34,6 +34,13 @@ class NfcHandlerActivity : ComponentActivity() {
                     return
                 }
 
+                val payload = String(record.payload, Charsets.UTF_8)
+                if (!UnlockTokenManager.isValidUnlockToken(this, payload)) {
+                    Log.w("NfcHandlerActivity", "Ignoring NFC tag with invalid unlock token.")
+                    finish()
+                    return
+                }
+
                 Log.d("NfcHandlerActivity", "Valid TapBlok NFC tag detected.")
 
                 val serviceIntent = Intent(this, AppMonitoringService::class.java)

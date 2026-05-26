@@ -39,7 +39,7 @@ import java.io.IOException
 class NfcWriteActivity : ComponentActivity() {
 
     companion object {
-        const val NFC_MIME_TYPE = "application/vnd.com.cj.tapblok"
+        const val NFC_MIME_TYPE = "application/vnd.com.astralab.homeblok"
     }
 
     private var nfcAdapter: NfcAdapter? = null
@@ -55,7 +55,7 @@ class NfcWriteActivity : ComponentActivity() {
             return
         }
 
-        ndefMessage = createNdefMessage("work")
+        ndefMessage = createNdefMessage(UnlockTokenManager.getOrCreateUnlockToken(this))
 
         setContent {
             TapBlokTheme {

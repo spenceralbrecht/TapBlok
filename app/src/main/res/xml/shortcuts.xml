@@ -8,9 +8,8 @@
         android:shortcutDisabledMessage="@string/shortcut_start_session_disabled">
         <!-- Must match ShortcutHandlerActivity.ACTION_START_MONITORING -->
         <intent
-            android:action="com.cj.tapblok.START_MONITORING"
-            android:targetPackage="com.cj.tapblok"
+            android:action="com.astralab.homeblok.START_MONITORING"
+            android:targetPackage="com.astralab.homeblok"
             android:targetClass="com.cj.tapblok.ShortcutHandlerActivity" />
     </shortcut>
 </shortcuts>
-

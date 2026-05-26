@@ -6,6 +6,8 @@ import android.content.Intent
 import android.app.Service
 import android.os.Build
 import android.os.Parcelable
+import android.provider.Settings
+import android.util.Log
 
 fun hasUsageStatsPermission(context: Context): Boolean {
     val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
@@ -21,13 +23,45 @@ fun isServiceRunning(@Suppress("UNUSED_PARAMETER") context: Context, serviceClas
     return serviceClass == AppMonitoringService::class.java && AppMonitoringService.isRunning
 }
 
-fun startMonitoringService(context: Context) {
+fun canRunMonitoringService(context: Context): Boolean =
+    hasUsageStatsPermission(context) && Settings.canDrawOverlays(context)
+
+fun startMonitoringService(context: Context): Boolean {
     val intent = Intent(context, AppMonitoringService::class.java)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        context.startForegroundService(intent)
-    } else {
-        context.startService(intent)
+    return try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
+        true
+    } catch (exception: RuntimeException) {
+        Log.w("ServiceUtils", "Unable to start monitoring service.", exception)
+        false
     }
+}
+
+fun ensureMonitoringDefaultEnabled(context: Context): Boolean {
+    val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+    prefs.edit()
+        .putBoolean("monitoring_active", true)
+        .apply()
+
+    if (!canRunMonitoringService(context)) return false
+
+    val homeRules = LocationRuleManager.state(context)
+    if (homeRules.enabled) {
+        LocationRuleManager.registerHomeGeofence(context)
+    }
+
+    val monitoringRunning = isServiceRunning(context, AppMonitoringService::class.java) ||
+        startMonitoringService(context)
+
+    if (homeRules.enabled) {
+        LocationRuleManager.refreshCurrentHomeState(context, startWhenAway = false)
+    }
+
+    return monitoringRunning
 }
 
 @Suppress("DEPRECATION")

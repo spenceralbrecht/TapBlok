@@ -17,18 +17,20 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.cj.tapblok"
+        applicationId = "com.astralab.homeblok"
         minSdk = 24
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.2.1"
+        versionCode = 19
+        versionName = "1.2.16"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
         create("release") {
-            storeFile = file(localProps.getProperty("RELEASE_STORE_FILE", ""))
+            localProps.getProperty("RELEASE_STORE_FILE")
+                ?.takeIf { it.isNotBlank() }
+                ?.let { storeFile = file(it) }
             storePassword = localProps.getProperty("RELEASE_STORE_PASSWORD", "")
             keyAlias = localProps.getProperty("RELEASE_KEY_ALIAS", "")
             keyPassword = localProps.getProperty("RELEASE_KEY_PASSWORD", "")
@@ -85,5 +87,5 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     implementation(libs.zxing.core)
     implementation(libs.zxing.android.embedded)
+    implementation(libs.play.services.location)
 }
-

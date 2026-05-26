@@ -13,20 +13,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Checklist
+import androidx.compose.material.icons.filled.RemoveDone
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -49,22 +45,6 @@ data class AppInfo(
 
 class AppSelectionViewModel(private val blockedAppDao: BlockedAppDao, private val application: Application) : ViewModel() {
 
-    companion object {
-        private val EXCLUDED_PACKAGES = setOf(
-            "com.google.android.dialer",
-            "com.samsung.android.dialer",
-            "com.android.dialer",
-            "com.sonyericsson.android.socialphonebook",
-            "com.android.systemui",
-            "com.google.android.apps.nexuslauncher",
-            "com.sec.android.app.launcher",
-            "com.android.settings",
-            "com.google.android.packageinstaller",
-            "com.android.packageinstaller",
-            "com.google.android.apps.messaging",
-            "com.samsung.android.messaging"
-        )
-    }
     private val _apps = MutableStateFlow<List<AppInfo>>(emptyList())
     val apps: StateFlow<List<AppInfo>> = _apps
 
@@ -82,7 +62,7 @@ class AppSelectionViewModel(private val blockedAppDao: BlockedAppDao, private va
 
             val baseAppList = allApps.mapNotNull { app ->
                 val packageName = app.activityInfo?.packageName ?: return@mapNotNull null
-                if (packageName == application.packageName || EXCLUDED_PACKAGES.contains(packageName)) {
+                if (ProtectedPackages.isProtected(packageName, application.packageName)) {
                     return@mapNotNull null
                 }
                 try {
@@ -155,18 +135,24 @@ class AppSelectionActivity : ComponentActivity() {
                 Scaffold(
                     topBar = {
                         TopAppBar(
-                            title = { Text("Select Apps to Block") },
+                            title = {
+                                Text(
+                                    text = "Blocked Apps",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
                             navigationIcon = {
                                 IconButton(onClick = { finish() }) {
                                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                                 }
                             },
                             actions = {
-                                TextButton(onClick = { viewModel.selectAllApps() }) {
-                                    Text("Select All")
+                                IconButton(onClick = { viewModel.selectAllApps() }) {
+                                    Icon(Icons.Default.Checklist, contentDescription = "Select all apps")
                                 }
-                                TextButton(onClick = { viewModel.unselectAllApps() }) {
-                                    Text("Unselect All")
+                                IconButton(onClick = { viewModel.unselectAllApps() }) {
+                                    Icon(Icons.Default.RemoveDone, contentDescription = "Clear selected apps")
                                 }
                             }
                         )
@@ -191,28 +177,16 @@ fun AppSelectionScreen(
     onAppCheckedChange: (AppInfo, Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var isServiceRunning by remember { mutableStateOf(isServiceRunning(context, AppMonitoringService::class.java)) }
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                isServiceRunning = isServiceRunning(context, AppMonitoringService::class.java)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    LazyColumn(modifier = modifier.padding(all = 8.dp)) {
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+    ) {
         items(apps, key = { it.packageName }) { app ->
             AppListItem(
                 app = app,
                 onCheckedChange = { isSelected ->
                     onAppCheckedChange(app, isSelected)
-                },
-                isEnabled = !isServiceRunning
+                }
             )
         }
     }
@@ -221,15 +195,14 @@ fun AppSelectionScreen(
 @Composable
 fun AppListItem(
     app: AppInfo,
-    onCheckedChange: (Boolean) -> Unit,
-    isEnabled: Boolean
+    onCheckedChange: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = isEnabled) { onCheckedChange(!app.isSelected) }
+            .clickable { onCheckedChange(!app.isSelected) }
             .padding(vertical = 8.dp, horizontal = 8.dp)
     ) {
         Image(
@@ -245,14 +218,14 @@ fun AppListItem(
         Text(
             text = app.appName,
             style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(1f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
         Spacer(modifier = Modifier.width(16.dp))
         Checkbox(
             checked = app.isSelected,
             onCheckedChange = onCheckedChange,
-            enabled = isEnabled
         )
     }
 }
-

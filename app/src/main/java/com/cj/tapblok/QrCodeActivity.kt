@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.createBitmap
 import com.cj.tapblok.ui.theme.TapBlokTheme
@@ -41,7 +42,13 @@ class QrCodeActivity : ComponentActivity() {
                 Scaffold(
                     topBar = {
                         TopAppBar(
-                            title = { Text("Your QR Code") },
+                            title = {
+                                Text(
+                                    text = "Unlock QR",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
                             navigationIcon = {
                                 IconButton(onClick = { finish() }) {
                                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -52,7 +59,7 @@ class QrCodeActivity : ComponentActivity() {
                 ) { padding ->
                     QrCodeScreen(
                         modifier = Modifier.padding(padding),
-                        content = QR_CODE_CONTENT
+                        content = UnlockTokenManager.getOrCreateUnlockToken(this)
                     )
                 }
             }
@@ -71,7 +78,7 @@ fun QrCodeScreen(modifier: Modifier = Modifier, content: String) {
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(32.dp),
+            .padding(horizontal = 28.dp, vertical = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -85,6 +92,7 @@ fun QrCodeScreen(modifier: Modifier = Modifier, content: String) {
                         contentDescription = "QR Code",
                         modifier = Modifier
                             .fillMaxWidth()
+                            .widthIn(max = 320.dp)
                             .aspectRatio(1f),
                         contentScale = ContentScale.Fit
                     )
@@ -125,4 +133,3 @@ private fun generateQrCode(content: String): Bitmap? {
         null
     }
 }
-
