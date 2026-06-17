@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.VpnService
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
@@ -60,9 +61,11 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.cj.tapblok.database.AppDatabase
 import com.cj.tapblok.ui.theme.TapBlokTheme
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.delay
 import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
@@ -101,10 +104,35 @@ fun MainScreen() {
     var hasFineLocationPermission by remember {
         mutableStateOf(LocationRuleManager.hasFineLocationPermission(context))
     }
+    var hasBackgroundLocationPermission by remember {
+        mutableStateOf(LocationRuleManager.hasBackgroundLocationPermission(context))
+    }
+    var vpnReady by remember { mutableStateOf(VpnService.prepare(context) == null) }
+    var websiteServiceRunning by remember { mutableStateOf(WebsiteBlockVpnService.isRunning) }
+    var websiteServiceStarting by remember { mutableStateOf(false) }
+    var websiteStartRefreshToken by remember { mutableStateOf(0) }
+    var homeRuleState by remember { mutableStateOf(LocationRuleManager.state(context)) }
+    var blockingPausedAtHome by remember {
+        mutableStateOf(LocationRuleManager.shouldAllowBlockedAppsAtHome(context))
+    }
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         )
+    }
+    val database = remember(context) { AppDatabase.getDatabase(context) }
+    val blockedAppsFlow = remember(database) { database.blockedAppDao().getAllBlockedApps() }
+    val blockedWebsitesFlow = remember(database) { database.blockedWebsiteDao().getAllBlockedWebsites() }
+    val blockedApps by blockedAppsFlow.collectAsState(initial = emptyList())
+    val blockedWebsites by blockedWebsitesFlow.collectAsState(initial = emptyList())
+
+    fun startWebsiteBlockingFromDashboard() {
+        WebsiteBlockVpnService.startIfAllowed(context)
+        websiteServiceRunning = WebsiteBlockVpnService.isRunning
+        websiteServiceStarting = !websiteServiceRunning
+        if (websiteServiceStarting) {
+            websiteStartRefreshToken += 1
+        }
     }
 
     var overrideStarted by remember { mutableStateOf(false) }
@@ -126,6 +154,10 @@ fun MainScreen() {
             isServiceRunning = isServiceRunning(context, AppMonitoringService::class.java)
         }
         isDeviceOwner = HardModeManager.isDeviceOwner(context)
+        vpnReady = VpnService.prepare(context) == null
+        websiteServiceRunning = WebsiteBlockVpnService.isRunning
+        homeRuleState = LocationRuleManager.state(context)
+        blockingPausedAtHome = LocationRuleManager.shouldAllowBlockedAppsAtHome(context)
     }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
@@ -147,6 +179,31 @@ fun MainScreen() {
         hasFineLocationPermission = isGranted
         if (isGranted) {
             LocationRuleManager.refreshCurrentHomeState(context, startWhenAway = false)
+        }
+        hasBackgroundLocationPermission = LocationRuleManager.hasBackgroundLocationPermission(context)
+        homeRuleState = LocationRuleManager.state(context)
+        blockingPausedAtHome = LocationRuleManager.shouldAllowBlockedAppsAtHome(context)
+    }
+
+    val vpnPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        vpnReady = VpnService.prepare(context) == null
+        if (vpnReady) {
+            val monitoringStarted = ensureMonitoringDefaultEnabled(context) ||
+                isServiceRunning(context, AppMonitoringService::class.java)
+            isServiceRunning = monitoringStarted
+            blockingPausedAtHome = LocationRuleManager.shouldAllowBlockedAppsAtHome(context)
+            if (monitoringStarted && !blockingPausedAtHome) {
+                startWebsiteBlockingFromDashboard()
+            } else if (blockingPausedAtHome) {
+                Toast.makeText(
+                    context,
+                    "Website blocking is paused by Home rules.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            websiteServiceRunning = WebsiteBlockVpnService.isRunning
         }
     }
 
@@ -186,9 +243,15 @@ fun MainScreen() {
                     context, Manifest.permission.CAMERA
                 ) == PackageManager.PERMISSION_GRANTED
                 hasFineLocationPermission = LocationRuleManager.hasFineLocationPermission(context)
+                hasBackgroundLocationPermission = LocationRuleManager.hasBackgroundLocationPermission(context)
                 isIgnoringBatteryOptimizations =
                     BatteryOptimizationManager.isIgnoringBatteryOptimizations(context)
                 isDeviceOwner = HardModeManager.isDeviceOwner(context)
+                vpnReady = VpnService.prepare(context) == null
+                websiteServiceRunning = WebsiteBlockVpnService.isRunning
+                websiteServiceStarting = false
+                homeRuleState = LocationRuleManager.state(context)
+                blockingPausedAtHome = LocationRuleManager.shouldAllowBlockedAppsAtHome(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -201,6 +264,14 @@ fun MainScreen() {
         if (allPermissionsGranted) {
             isServiceRunning = ensureMonitoringDefaultEnabled(context) ||
                 isServiceRunning(context, AppMonitoringService::class.java)
+        }
+    }
+
+    LaunchedEffect(websiteStartRefreshToken) {
+        if (websiteStartRefreshToken > 0) {
+            delay(1200)
+            websiteServiceRunning = WebsiteBlockVpnService.isRunning
+            websiteServiceStarting = false
         }
     }
 
@@ -238,6 +309,10 @@ fun MainScreen() {
                     ProtectionHero(
                         isServiceRunning = isServiceRunning,
                         blockedAppAttempts = blockedAppAttempts,
+                        blockedAppCount = blockedApps.size,
+                        blockedWebsiteCount = blockedWebsites.size,
+                        vpnReady = vpnReady,
+                        websiteServiceRunning = websiteServiceRunning,
                         onStartMonitoring = {
                             isServiceRunning = ensureMonitoringDefaultEnabled(context)
                         }
@@ -317,6 +392,74 @@ fun MainScreen() {
                                 )
                             }
                         )
+
+                        ProtectionChecklist(
+                            isServiceRunning = isServiceRunning,
+                            hasUsagePermission = hasUsagePermission,
+                            canDrawOverlays = canDrawOverlays,
+                            blockedAppCount = blockedApps.size,
+                            blockedWebsiteCount = blockedWebsites.size,
+                            vpnReady = vpnReady,
+                            websiteServiceRunning = websiteServiceRunning,
+                            websiteServiceStarting = websiteServiceStarting,
+                            isIgnoringBatteryOptimizations = isIgnoringBatteryOptimizations,
+                            hasFineLocationPermission = hasFineLocationPermission,
+                            hasBackgroundLocationPermission = hasBackgroundLocationPermission,
+                            homeRuleState = homeRuleState,
+                            blockingPausedAtHome = blockingPausedAtHome,
+                            onStartMonitoring = {
+                                isServiceRunning = ensureMonitoringDefaultEnabled(context)
+                            },
+                            onGrantUsage = {
+                                settingsLauncher.launch(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                            },
+                            onGrantOverlay = {
+                                settingsLauncher.launch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
+                            },
+                            onManageApps = {
+                                context.startActivity(Intent(context, AppSelectionActivity::class.java))
+                            },
+                            onManageWebsites = {
+                                context.startActivity(Intent(context, WebsiteRulesActivity::class.java))
+                            },
+                            onAllowWebsiteBlocking = {
+                                val intent = VpnService.prepare(context)
+                                if (intent != null) {
+                                    vpnPermissionLauncher.launch(intent)
+                                } else {
+                                    vpnReady = true
+                                    val monitoringStarted = ensureMonitoringDefaultEnabled(context) ||
+                                        isServiceRunning(context, AppMonitoringService::class.java)
+                                    isServiceRunning = monitoringStarted
+                                    blockingPausedAtHome = LocationRuleManager.shouldAllowBlockedAppsAtHome(context)
+                                    if (monitoringStarted && !blockingPausedAtHome) {
+                                        startWebsiteBlockingFromDashboard()
+                                    } else if (blockingPausedAtHome) {
+                                        Toast.makeText(
+                                            context,
+                                            "Website blocking is paused by Home rules.",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                    websiteServiceRunning = WebsiteBlockVpnService.isRunning
+                                }
+                            },
+                            onGrantBattery = {
+                                val requestIntent =
+                                    BatteryOptimizationManager.requestIgnoreBatteryOptimizationsIntent(context)
+                                runCatching {
+                                    batteryOptimizationLauncher.launch(requestIntent)
+                                }.onFailure {
+                                    batteryOptimizationLauncher.launch(
+                                        BatteryOptimizationManager.appBatterySettingsIntent(context)
+                                    )
+                                }
+                            },
+                            onHomeRules = {
+                                context.startActivity(Intent(context, HomeRulesActivity::class.java))
+                            }
+                        )
+
                         Spacer(modifier = Modifier.height(96.dp))
                         SectionHeading(text = "Utilities")
                         ControlTileRow(
@@ -515,8 +658,43 @@ private fun HomeTopBar(isServiceRunning: Boolean) {
 private fun ProtectionHero(
     isServiceRunning: Boolean,
     blockedAppAttempts: Int,
+    blockedAppCount: Int,
+    blockedWebsiteCount: Int,
+    vpnReady: Boolean,
+    websiteServiceRunning: Boolean,
     onStartMonitoring: () -> Unit
 ) {
+    val hasAppTargets = blockedAppCount > 0
+    val hasWebsiteTargets = blockedWebsiteCount > 0
+    val websiteBlockingActive = hasWebsiteTargets && vpnReady && websiteServiceRunning
+    val eyebrow = when {
+        isServiceRunning && hasAppTargets && (!hasWebsiteTargets || websiteBlockingActive) -> "Protected session"
+        isServiceRunning && hasWebsiteTargets && websiteBlockingActive -> "Website session"
+        isServiceRunning && hasWebsiteTargets -> "Website setup needed"
+        isServiceRunning -> "Session running"
+        else -> "Ready to protect"
+    }
+    val headline = when {
+        isServiceRunning && hasAppTargets && (!hasWebsiteTargets || websiteBlockingActive) -> "Your exits are blocked"
+        isServiceRunning && hasWebsiteTargets && websiteBlockingActive -> "Websites are blocked"
+        isServiceRunning && hasWebsiteTargets -> "Finish website setup"
+        isServiceRunning && hasAppTargets -> "App blocking is active"
+        isServiceRunning -> "Choose what to block"
+        else -> "Start a protected session"
+    }
+    val body = when {
+        isServiceRunning && hasAppTargets && hasWebsiteTargets && websiteBlockingActive ->
+            "Apps, websites, and override friction are armed."
+        isServiceRunning && hasAppTargets && hasWebsiteTargets ->
+            "Selected apps are blocked. Finish website VPN setup to block domains."
+        isServiceRunning && hasAppTargets -> "Selected apps and override friction are armed."
+        isServiceRunning && hasWebsiteTargets && websiteBlockingActive ->
+            "Selected domains are blocked through the website VPN."
+        isServiceRunning && hasWebsiteTargets -> "Allow the website VPN before selected domains can be blocked."
+        isServiceRunning -> "Monitoring is on, but no apps or websites are selected yet."
+        else -> "Turn on app and website blocking with one tap."
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(36.dp),
@@ -559,12 +737,12 @@ private fun ProtectionHero(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            text = if (isServiceRunning) "Protected session" else "Ready to protect",
+                            text = eyebrow,
                             style = MaterialTheme.typography.labelLarge,
                             color = Color(0xFFBDF7CE)
                         )
                         Text(
-                            text = if (isServiceRunning) "Your exits are blocked" else "Start a protected session",
+                            text = headline,
                             style = MaterialTheme.typography.headlineSmall,
                             color = Color.White
                         )
@@ -572,11 +750,7 @@ private fun ProtectionHero(
                 }
 
                 Text(
-                    text = if (isServiceRunning) {
-                        "Apps, websites, home rules, and override friction are armed."
-                    } else {
-                        "Turn on app and website blocking with one tap."
-                    },
+                    text = body,
                     style = MaterialTheme.typography.bodyLarge,
                     color = Color(0xFFE7F8EC)
                 )
@@ -630,6 +804,209 @@ private fun StatusChip(
             style = MaterialTheme.typography.titleMedium,
             color = Color.White
         )
+    }
+}
+
+@Composable
+private fun ProtectionChecklist(
+    isServiceRunning: Boolean,
+    hasUsagePermission: Boolean,
+    canDrawOverlays: Boolean,
+    blockedAppCount: Int,
+    blockedWebsiteCount: Int,
+    vpnReady: Boolean,
+    websiteServiceRunning: Boolean,
+    websiteServiceStarting: Boolean,
+    isIgnoringBatteryOptimizations: Boolean,
+    hasFineLocationPermission: Boolean,
+    hasBackgroundLocationPermission: Boolean,
+    homeRuleState: HomeRuleState,
+    blockingPausedAtHome: Boolean,
+    onStartMonitoring: () -> Unit,
+    onGrantUsage: () -> Unit,
+    onGrantOverlay: () -> Unit,
+    onManageApps: () -> Unit,
+    onManageWebsites: () -> Unit,
+    onAllowWebsiteBlocking: () -> Unit,
+    onGrantBattery: () -> Unit,
+    onHomeRules: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(30.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFDFEFA)),
+        border = BorderStroke(1.dp, Color(0xFFE0E7DD))
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                ControlIcon(
+                    icon = Icons.Default.Security,
+                    enabled = true,
+                    size = 46.dp,
+                    iconSize = 25.dp
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = "Protection checklist",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color(0xFF17211B)
+                    )
+                    Text(
+                        text = "If blocking fails, start here.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF667268)
+                    )
+                }
+            }
+
+            ProtectionCheckRow(
+                title = "Monitoring service",
+                detail = if (isServiceRunning) "Running" else "Stopped",
+                healthy = isServiceRunning,
+                actionLabel = if (isServiceRunning) null else "Start",
+                onAction = onStartMonitoring
+            )
+            ProtectionCheckRow(
+                title = "Usage access",
+                detail = if (hasUsagePermission) "Allowed" else "Required to detect opened apps",
+                healthy = hasUsagePermission,
+                actionLabel = if (hasUsagePermission) null else "Grant",
+                onAction = onGrantUsage
+            )
+            ProtectionCheckRow(
+                title = "Overlay permission",
+                detail = if (canDrawOverlays) "Allowed" else "Required to show the block screen",
+                healthy = canDrawOverlays,
+                actionLabel = if (canDrawOverlays) null else "Grant",
+                onAction = onGrantOverlay
+            )
+            ProtectionCheckRow(
+                title = "Blocked apps",
+                detail = if (blockedAppCount > 0) "$blockedAppCount selected" else "No apps selected",
+                healthy = blockedAppCount > 0,
+                actionLabel = if (blockedAppCount > 0) "Edit" else "Add",
+                onAction = onManageApps
+            )
+            ProtectionCheckRow(
+                title = "Website VPN",
+                detail = when {
+                    blockedWebsiteCount == 0 -> "Add domains before VPN matters"
+                    blockingPausedAtHome -> "Paused by home rules"
+                    !vpnReady -> "Permission needed"
+                    websiteServiceStarting -> "Starting..."
+                    websiteServiceRunning -> "Running"
+                    isServiceRunning -> "Restart needed"
+                    else -> "Start monitoring to block domains"
+                },
+                healthy = blockedWebsiteCount > 0 && vpnReady && websiteServiceRunning && !blockingPausedAtHome,
+                actionLabel = when {
+                    blockedWebsiteCount == 0 -> "Add"
+                    blockingPausedAtHome -> "Review"
+                    !vpnReady -> "Allow"
+                    websiteServiceStarting -> null
+                    !websiteServiceRunning -> if (isServiceRunning) "Restart" else "Start"
+                    else -> null
+                },
+                onAction = when {
+                    blockedWebsiteCount == 0 -> onManageWebsites
+                    blockingPausedAtHome -> onHomeRules
+                    else -> onAllowWebsiteBlocking
+                }
+            )
+            ProtectionCheckRow(
+                title = "Blocked websites",
+                detail = if (blockedWebsiteCount > 0) "$blockedWebsiteCount domains" else "No domains selected",
+                healthy = blockedWebsiteCount > 0,
+                actionLabel = if (blockedWebsiteCount > 0) "Edit" else "Add",
+                onAction = onManageWebsites
+            )
+            ProtectionCheckRow(
+                title = "Battery access",
+                detail = if (isIgnoringBatteryOptimizations) "Unrestricted" else "Android may pause blocking",
+                healthy = isIgnoringBatteryOptimizations,
+                actionLabel = if (isIgnoringBatteryOptimizations) null else "Allow",
+                onAction = onGrantBattery
+            )
+            ProtectionCheckRow(
+                title = "Home rules",
+                detail = when {
+                    !homeRuleState.enabled -> "Off"
+                    !hasFineLocationPermission || !hasBackgroundLocationPermission -> "Location setup needed"
+                    blockingPausedAtHome -> "Blocking paused at home"
+                    else -> "Not pausing blocking"
+                },
+                healthy = homeRuleState.enabled &&
+                    hasFineLocationPermission &&
+                    hasBackgroundLocationPermission &&
+                    !blockingPausedAtHome,
+                actionLabel = when {
+                    homeRuleState.enabled && (!hasFineLocationPermission || !hasBackgroundLocationPermission) -> "Open"
+                    homeRuleState.enabled -> "Review"
+                    else -> "Set up"
+                },
+                onAction = onHomeRules
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProtectionCheckRow(
+    title: String,
+    detail: String,
+    healthy: Boolean,
+    actionLabel: String?,
+    onAction: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(12.dp)
+                .background(
+                    color = if (healthy) Color(0xFF087A49) else Color(0xFFD35F2B),
+                    shape = CircleShape
+                )
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(1.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF17211B)
+            )
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF667268)
+            )
+        }
+        actionLabel?.let {
+            Button(
+                onClick = onAction,
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (healthy) Color(0xFFE6F4EA) else Color(0xFF087A49),
+                    contentColor = if (healthy) Color(0xFF087A49) else Color.White
+                )
+            ) {
+                Text(it)
+            }
+        }
     }
 }
 
