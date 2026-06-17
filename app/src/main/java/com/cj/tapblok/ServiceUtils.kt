@@ -4,6 +4,7 @@ import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.app.Service
+import android.net.VpnService
 import android.os.Build
 import android.os.Parcelable
 import android.provider.Settings
@@ -20,7 +21,11 @@ fun hasUsageStatsPermission(context: Context): Boolean {
 }
 
 fun isServiceRunning(@Suppress("UNUSED_PARAMETER") context: Context, serviceClass: Class<out Service>): Boolean {
-    return serviceClass == AppMonitoringService::class.java && AppMonitoringService.isRunning
+    return when (serviceClass) {
+        AppMonitoringService::class.java -> AppMonitoringService.isRunning
+        WebsiteBlockVpnService::class.java -> WebsiteBlockVpnService.isRunning
+        else -> false
+    }
 }
 
 fun canRunMonitoringService(context: Context): Boolean =
@@ -62,6 +67,14 @@ fun ensureMonitoringDefaultEnabled(context: Context): Boolean {
     }
 
     return monitoringRunning
+}
+
+fun canRunWebsiteBlockingService(context: Context): Boolean =
+    VpnService.prepare(context) == null
+
+fun startWebsiteBlockingIfReady(context: Context) {
+    if (!AppMonitoringService.isRunning || !canRunWebsiteBlockingService(context)) return
+    WebsiteBlockVpnService.startIfAllowed(context)
 }
 
 @Suppress("DEPRECATION")

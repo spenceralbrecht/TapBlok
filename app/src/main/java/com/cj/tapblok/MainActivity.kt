@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.PlayArrow
@@ -282,6 +283,12 @@ fun MainScreen() {
                             icon = Icons.Default.Apps,
                             label = "Manage Blocked Apps",
                             onClick = { context.startActivity(Intent(context, AppSelectionActivity::class.java)) }
+                        )
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                        ActionRow(
+                            icon = Icons.Default.Language,
+                            label = "Manage Blocked Websites",
+                            onClick = { context.startActivity(Intent(context, WebsiteRulesActivity::class.java)) }
                         )
                         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                         ActionRow(

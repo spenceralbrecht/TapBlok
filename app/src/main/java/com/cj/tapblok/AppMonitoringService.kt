@@ -24,6 +24,7 @@ class AppMonitoringService : Service() {
     private lateinit var db: AppDatabase
     private lateinit var prefs: android.content.SharedPreferences
     @Volatile private var blockedApps: Set<String> = emptySet()
+    @Volatile private var hasBlockedWebsites = false
     private var isMonitoring = false
 
     companion object {
@@ -68,6 +69,9 @@ class AppMonitoringService : Service() {
         LocationRuleManager.refreshCurrentHomeState(this, startWhenAway = false) { homeDistance ->
             if (homeDistance.insideHome == true && LocationRuleManager.shouldAllowBlockedAppsAtHome(this)) {
                 Log.d("AppMonitoringService", "Already inside home radius; monitoring will stay active but allow blocked apps.")
+                WebsiteBlockVpnService.stop(this)
+            } else if (hasBlockedWebsites) {
+                WebsiteBlockVpnService.startIfAllowed(this)
             }
         }
 
@@ -87,6 +91,17 @@ class AppMonitoringService : Service() {
         }
 
         serviceScope.launch {
+            db.blockedWebsiteDao().getAllBlockedWebsites().collect { list ->
+                hasBlockedWebsites = list.isNotEmpty()
+                if (!hasBlockedWebsites || LocationRuleManager.shouldAllowBlockedAppsAtHome(this@AppMonitoringService)) {
+                    WebsiteBlockVpnService.stop(this@AppMonitoringService)
+                } else if (!WebsiteBlockVpnService.isRunning) {
+                    WebsiteBlockVpnService.startIfAllowed(this@AppMonitoringService)
+                }
+            }
+        }
+
+        serviceScope.launch {
             val localContext = this@AppMonitoringService
 
             while (isActive) {
@@ -97,11 +112,16 @@ class AppMonitoringService : Service() {
                 }
 
                 if (LocationRuleManager.shouldAllowBlockedAppsAtHome(localContext)) {
+                    WebsiteBlockVpnService.stop(localContext)
                     if (BuildConfig.DEBUG) {
                         Log.d("AppMonitoringService", "Inside home radius; monitoring remains active without blocking.")
                     }
                     delay(1000)
                     continue
+                }
+
+                if (hasBlockedWebsites && !WebsiteBlockVpnService.isRunning) {
+                    WebsiteBlockVpnService.startIfAllowed(localContext)
                 }
 
                 val foregroundApp = getForegroundApp()
@@ -140,6 +160,7 @@ class AppMonitoringService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        WebsiteBlockVpnService.stop(this)
         HardModeManager.setBlockedPackagesSuspended(this, blockedApps, suspended = false)
         serviceScope.cancel()
         Log.d("AppMonitoringService", "Service has been destroyed.")
