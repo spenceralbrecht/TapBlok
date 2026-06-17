@@ -20,8 +20,8 @@ android {
         applicationId = "com.astralab.homeblok"
         minSdk = 24
         targetSdk = 36
-        versionCode = 19
-        versionName = "1.2.16"
+        versionCode = 20
+        versionName = "1.2.17"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
