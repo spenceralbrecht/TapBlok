@@ -19,6 +19,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -29,6 +32,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
+import com.cj.tapblok.database.BlockMode
 import com.cj.tapblok.database.BlockedApp
 import com.cj.tapblok.database.BlockedAppDao
 import com.cj.tapblok.ui.theme.TapBlokTheme
@@ -40,7 +44,8 @@ import kotlinx.coroutines.launch
 data class AppInfo(
     val appName: String,
     val packageName: String,
-    val isSelected: Boolean = false
+    val isSelected: Boolean = false,
+    val blockMode: String = BlockMode.HOME_AWARE
 )
 
 class AppSelectionViewModel(private val blockedAppDao: BlockedAppDao, private val application: Application) : ViewModel() {
@@ -77,8 +82,13 @@ class AppSelectionViewModel(private val blockedAppDao: BlockedAppDao, private va
             }.sortedBy { it.appName.lowercase() }
 
             blockedAppDao.getAllBlockedApps().collect { blockedApps ->
-                val blockedAppPackages = blockedApps.map { it.packageName }.toSet()
-                _apps.value = baseAppList.map { it.copy(isSelected = blockedAppPackages.contains(it.packageName)) }
+                val blockedAppModes = blockedApps.associate { it.packageName to it.blockMode }
+                _apps.value = baseAppList.map { app ->
+                    app.copy(
+                        isSelected = blockedAppModes.containsKey(app.packageName),
+                        blockMode = blockedAppModes[app.packageName] ?: BlockMode.HOME_AWARE
+                    )
+                }
             }
         }
     }
@@ -90,6 +100,12 @@ class AppSelectionViewModel(private val blockedAppDao: BlockedAppDao, private va
             } else {
                 blockedAppDao.delete(BlockedApp(packageName = app.packageName))
             }
+        }
+    }
+
+    fun onAppBlockModeChanged(app: AppInfo, blockMode: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            blockedAppDao.updateBlockMode(app.packageName, blockMode)
         }
     }
 
@@ -163,6 +179,9 @@ class AppSelectionActivity : ComponentActivity() {
                         onAppCheckedChange = { app, isSelected ->
                             viewModel.onAppSelectionChanged(app, isSelected)
                         },
+                        onAppBlockModeChange = { app, blockMode ->
+                            viewModel.onAppBlockModeChanged(app, blockMode)
+                        },
                         modifier = Modifier.padding(padding)
                     )
                 }
@@ -175,8 +194,11 @@ class AppSelectionActivity : ComponentActivity() {
 fun AppSelectionScreen(
     apps: List<AppInfo>,
     onAppCheckedChange: (AppInfo, Boolean) -> Unit,
+    onAppBlockModeChange: (AppInfo, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var modeEditorApp by remember { mutableStateOf<AppInfo?>(null) }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
@@ -186,16 +208,31 @@ fun AppSelectionScreen(
                 app = app,
                 onCheckedChange = { isSelected ->
                     onAppCheckedChange(app, isSelected)
+                },
+                onModeClick = {
+                    modeEditorApp = app
                 }
             )
         }
+    }
+
+    modeEditorApp?.let { app ->
+        BlockModePickerSheet(
+            currentMode = app.blockMode,
+            onSelect = { blockMode ->
+                onAppBlockModeChange(app, blockMode)
+                modeEditorApp = null
+            },
+            onDismiss = { modeEditorApp = null }
+        )
     }
 }
 
 @Composable
 fun AppListItem(
     app: AppInfo,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    onModeClick: () -> Unit
 ) {
     val context = LocalContext.current
     Row(
@@ -215,13 +252,21 @@ fun AppListItem(
             modifier = Modifier.size(48.dp)
         )
         Spacer(modifier = Modifier.width(16.dp))
-        Text(
-            text = app.appName,
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.weight(1f),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = app.appName,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (app.isSelected) {
+                Spacer(modifier = Modifier.height(6.dp))
+                BlockModePill(
+                    mode = app.blockMode,
+                    onClick = onModeClick
+                )
+            }
+        }
         Spacer(modifier = Modifier.width(16.dp))
         Checkbox(
             checked = app.isSelected,

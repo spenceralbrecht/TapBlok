@@ -15,6 +15,9 @@ interface BlockedWebsiteDao {
     @Delete
     suspend fun delete(blockedWebsite: BlockedWebsite)
 
+    @Query("UPDATE blocked_websites SET blockMode = :blockMode WHERE domain = :domain")
+    suspend fun updateBlockMode(domain: String, blockMode: String)
+
     @Query("SELECT * FROM blocked_websites ORDER BY domain COLLATE NOCASE ASC")
     fun getAllBlockedWebsites(): Flow<List<BlockedWebsite>>
 

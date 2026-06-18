@@ -11,6 +11,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import com.cj.tapblok.database.AppDatabase
+import com.cj.tapblok.database.BlockMode
 import com.google.android.gms.location.Geofence
 import com.google.android.gms.location.GeofencingRequest
 import com.google.android.gms.location.LocationServices
@@ -355,12 +356,26 @@ object LocationRuleManager {
                 .blockedAppDao()
                 .getAllBlockedApps()
                 .first()
+            val pausedAtHome = shouldAllowBlockedAppsAtHome(context)
+            val homeAwarePackages = blockedPackages
+                .filterNot { BlockMode.isAlways(it.blockMode) }
                 .map { it.packageName }
                 .toSet()
+            val activePackages = blockedPackages
+                .filter { !pausedAtHome || BlockMode.isAlways(it.blockMode) }
+                .map { it.packageName }
+                .toSet()
+            if (pausedAtHome) {
+                HardModeManager.setBlockedPackagesSuspended(
+                    context,
+                    homeAwarePackages,
+                    suspended = false
+                )
+            }
             HardModeManager.setBlockedPackagesSuspended(
                 context,
-                blockedPackages,
-                suspended = shouldSuspendBlockedPackages(context)
+                activePackages,
+                suspended = true
             )
         }
     }

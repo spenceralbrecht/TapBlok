@@ -62,6 +62,7 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.cj.tapblok.database.AppDatabase
+import com.cj.tapblok.database.BlockMode
 import com.cj.tapblok.ui.theme.TapBlokTheme
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -125,6 +126,8 @@ fun MainScreen() {
     val blockedWebsitesFlow = remember(database) { database.blockedWebsiteDao().getAllBlockedWebsites() }
     val blockedApps by blockedAppsFlow.collectAsState(initial = emptyList())
     val blockedWebsites by blockedWebsitesFlow.collectAsState(initial = emptyList())
+    val alwaysBlockedAppCount = blockedApps.count { BlockMode.isAlways(it.blockMode) }
+    val alwaysBlockedWebsiteCount = blockedWebsites.count { BlockMode.isAlways(it.blockMode) }
 
     fun startWebsiteBlockingFromDashboard() {
         WebsiteBlockVpnService.startIfAllowed(context)
@@ -311,6 +314,9 @@ fun MainScreen() {
                         blockedAppAttempts = blockedAppAttempts,
                         blockedAppCount = blockedApps.size,
                         blockedWebsiteCount = blockedWebsites.size,
+                        alwaysBlockedAppCount = alwaysBlockedAppCount,
+                        alwaysBlockedWebsiteCount = alwaysBlockedWebsiteCount,
+                        blockingPausedAtHome = blockingPausedAtHome,
                         vpnReady = vpnReady,
                         websiteServiceRunning = websiteServiceRunning,
                         onStartMonitoring = {
@@ -399,6 +405,8 @@ fun MainScreen() {
                             canDrawOverlays = canDrawOverlays,
                             blockedAppCount = blockedApps.size,
                             blockedWebsiteCount = blockedWebsites.size,
+                            alwaysBlockedAppCount = alwaysBlockedAppCount,
+                            alwaysBlockedWebsiteCount = alwaysBlockedWebsiteCount,
                             vpnReady = vpnReady,
                             websiteServiceRunning = websiteServiceRunning,
                             websiteServiceStarting = websiteServiceStarting,
@@ -660,34 +668,45 @@ private fun ProtectionHero(
     blockedAppAttempts: Int,
     blockedAppCount: Int,
     blockedWebsiteCount: Int,
+    alwaysBlockedAppCount: Int,
+    alwaysBlockedWebsiteCount: Int,
+    blockingPausedAtHome: Boolean,
     vpnReady: Boolean,
     websiteServiceRunning: Boolean,
     onStartMonitoring: () -> Unit
 ) {
     val hasAppTargets = blockedAppCount > 0
     val hasWebsiteTargets = blockedWebsiteCount > 0
-    val websiteBlockingActive = hasWebsiteTargets && vpnReady && websiteServiceRunning
+    val hasActiveAppTargets = hasAppTargets && (!blockingPausedAtHome || alwaysBlockedAppCount > 0)
+    val hasActiveWebsiteTargets = hasWebsiteTargets && (!blockingPausedAtHome || alwaysBlockedWebsiteCount > 0)
+    val websiteBlockingActive = hasActiveWebsiteTargets && vpnReady && websiteServiceRunning
     val eyebrow = when {
-        isServiceRunning && hasAppTargets && (!hasWebsiteTargets || websiteBlockingActive) -> "Protected session"
+        isServiceRunning && blockingPausedAtHome && !hasActiveAppTargets && !websiteBlockingActive -> "Home pause active"
+        isServiceRunning && hasActiveAppTargets && (!hasWebsiteTargets || websiteBlockingActive) -> "Protected session"
         isServiceRunning && hasWebsiteTargets && websiteBlockingActive -> "Website session"
         isServiceRunning && hasWebsiteTargets -> "Website setup needed"
         isServiceRunning -> "Session running"
         else -> "Ready to protect"
     }
     val headline = when {
-        isServiceRunning && hasAppTargets && (!hasWebsiteTargets || websiteBlockingActive) -> "Your exits are blocked"
+        isServiceRunning && blockingPausedAtHome && !hasActiveAppTargets && !websiteBlockingActive -> "Home-aware blocks paused"
+        isServiceRunning && hasActiveAppTargets && (!hasWebsiteTargets || websiteBlockingActive) -> "Your exits are blocked"
         isServiceRunning && hasWebsiteTargets && websiteBlockingActive -> "Websites are blocked"
         isServiceRunning && hasWebsiteTargets -> "Finish website setup"
-        isServiceRunning && hasAppTargets -> "App blocking is active"
+        isServiceRunning && hasActiveAppTargets -> "App blocking is active"
         isServiceRunning -> "Choose what to block"
         else -> "Start a protected session"
     }
     val body = when {
-        isServiceRunning && hasAppTargets && hasWebsiteTargets && websiteBlockingActive ->
+        isServiceRunning && blockingPausedAtHome && (alwaysBlockedAppCount > 0 || alwaysBlockedWebsiteCount > 0) ->
+            "Home-aware items are allowed at home; always items ignore the home exception."
+        isServiceRunning && blockingPausedAtHome ->
+            "Home Rules are allowing home-aware apps and websites right now."
+        isServiceRunning && hasActiveAppTargets && hasWebsiteTargets && websiteBlockingActive ->
             "Apps, websites, and override friction are armed."
-        isServiceRunning && hasAppTargets && hasWebsiteTargets ->
+        isServiceRunning && hasActiveAppTargets && hasWebsiteTargets ->
             "Selected apps are blocked. Finish website VPN setup to block domains."
-        isServiceRunning && hasAppTargets -> "Selected apps and override friction are armed."
+        isServiceRunning && hasActiveAppTargets -> "Selected apps and override friction are armed."
         isServiceRunning && hasWebsiteTargets && websiteBlockingActive ->
             "Selected domains are blocked through the website VPN."
         isServiceRunning && hasWebsiteTargets -> "Allow the website VPN before selected domains can be blocked."
@@ -807,6 +826,20 @@ private fun StatusChip(
     }
 }
 
+private fun selectedSummary(
+    total: Int,
+    always: Int,
+    empty: String,
+    unit: String
+): String {
+    if (total == 0) return empty
+    return if (always > 0) {
+        "$total $unit, $always always"
+    } else {
+        "$total $unit"
+    }
+}
+
 @Composable
 private fun ProtectionChecklist(
     isServiceRunning: Boolean,
@@ -814,6 +847,8 @@ private fun ProtectionChecklist(
     canDrawOverlays: Boolean,
     blockedAppCount: Int,
     blockedWebsiteCount: Int,
+    alwaysBlockedAppCount: Int,
+    alwaysBlockedWebsiteCount: Int,
     vpnReady: Boolean,
     websiteServiceRunning: Boolean,
     websiteServiceStarting: Boolean,
@@ -891,7 +926,12 @@ private fun ProtectionChecklist(
             )
             ProtectionCheckRow(
                 title = "Blocked apps",
-                detail = if (blockedAppCount > 0) "$blockedAppCount selected" else "No apps selected",
+                detail = selectedSummary(
+                    total = blockedAppCount,
+                    always = alwaysBlockedAppCount,
+                    empty = "No apps selected",
+                    unit = "selected"
+                ),
                 healthy = blockedAppCount > 0,
                 actionLabel = if (blockedAppCount > 0) "Edit" else "Add",
                 onAction = onManageApps
@@ -900,17 +940,20 @@ private fun ProtectionChecklist(
                 title = "Website VPN",
                 detail = when {
                     blockedWebsiteCount == 0 -> "Add domains before VPN matters"
-                    blockingPausedAtHome -> "Paused by home rules"
+                    blockingPausedAtHome && alwaysBlockedWebsiteCount == 0 -> "Home-aware domains paused"
                     !vpnReady -> "Permission needed"
                     websiteServiceStarting -> "Starting..."
                     websiteServiceRunning -> "Running"
                     isServiceRunning -> "Restart needed"
                     else -> "Start monitoring to block domains"
                 },
-                healthy = blockedWebsiteCount > 0 && vpnReady && websiteServiceRunning && !blockingPausedAtHome,
+                healthy = blockedWebsiteCount > 0 &&
+                    vpnReady &&
+                    websiteServiceRunning &&
+                    (!blockingPausedAtHome || alwaysBlockedWebsiteCount > 0),
                 actionLabel = when {
                     blockedWebsiteCount == 0 -> "Add"
-                    blockingPausedAtHome -> "Review"
+                    blockingPausedAtHome && alwaysBlockedWebsiteCount == 0 -> "Review"
                     !vpnReady -> "Allow"
                     websiteServiceStarting -> null
                     !websiteServiceRunning -> if (isServiceRunning) "Restart" else "Start"
@@ -918,13 +961,18 @@ private fun ProtectionChecklist(
                 },
                 onAction = when {
                     blockedWebsiteCount == 0 -> onManageWebsites
-                    blockingPausedAtHome -> onHomeRules
+                    blockingPausedAtHome && alwaysBlockedWebsiteCount == 0 -> onHomeRules
                     else -> onAllowWebsiteBlocking
                 }
             )
             ProtectionCheckRow(
                 title = "Blocked websites",
-                detail = if (blockedWebsiteCount > 0) "$blockedWebsiteCount domains" else "No domains selected",
+                detail = selectedSummary(
+                    total = blockedWebsiteCount,
+                    always = alwaysBlockedWebsiteCount,
+                    empty = "No domains selected",
+                    unit = "domains"
+                ),
                 healthy = blockedWebsiteCount > 0,
                 actionLabel = if (blockedWebsiteCount > 0) "Edit" else "Add",
                 onAction = onManageWebsites
@@ -941,7 +989,7 @@ private fun ProtectionChecklist(
                 detail = when {
                     !homeRuleState.enabled -> "Off"
                     !hasFineLocationPermission || !hasBackgroundLocationPermission -> "Location setup needed"
-                    blockingPausedAtHome -> "Blocking paused at home"
+                    blockingPausedAtHome -> "Home-aware items paused"
                     else -> "Not pausing blocking"
                 },
                 healthy = homeRuleState.enabled &&

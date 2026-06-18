@@ -10,6 +10,8 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.cj.tapblok.database.AppDatabase
+import com.cj.tapblok.database.BlockMode
+import com.cj.tapblok.database.BlockedWebsite
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.DatagramPacket
@@ -31,7 +33,7 @@ class WebsiteBlockVpnService : VpnService() {
     private var packetJob: Job? = null
 
     @Volatile
-    private var blockedDomains: Set<String> = emptySet()
+    private var blockedWebsites: List<BlockedWebsite> = emptyList()
 
     companion object {
         private const val TAG = "WebsiteBlockVpnService"
@@ -113,8 +115,8 @@ class WebsiteBlockVpnService : VpnService() {
                 .getAllBlockedWebsites()
                 .distinctUntilChanged()
                 .collect { websites ->
-                    blockedDomains = websites.map { it.domain }.toSet()
-                    if (blockedDomains.isEmpty()) {
+                    blockedWebsites = websites
+                    if (activeBlockedDomains().isEmpty()) {
                         stopSelf()
                     }
                 }
@@ -172,7 +174,7 @@ class WebsiteBlockVpnService : VpnService() {
                     }
 
                     val response = if (queryV4 != null) {
-                        if (WebsiteDomainRules.isBlocked(queryV4.questionDomain, blockedDomains)) {
+                        if (WebsiteDomainRules.isBlocked(queryV4.questionDomain, activeBlockedDomains())) {
                             DnsPacket.buildBlockedResponsePacket(packet, length)
                         } else {
                             val upstreamPayload = forwardDnsQuery(queryV4.dnsPayload)
@@ -184,7 +186,7 @@ class WebsiteBlockVpnService : VpnService() {
                         }
                     } else {
                         checkNotNull(queryV6)
-                        if (WebsiteDomainRules.isBlocked(queryV6.questionDomain, blockedDomains)) {
+                        if (WebsiteDomainRules.isBlocked(queryV6.questionDomain, activeBlockedDomains())) {
                             DnsPacket.buildBlockedResponsePacketV6(packet, length)
                         } else {
                             val upstreamPayload = forwardDnsQuery(queryV6.dnsPayload)
@@ -242,6 +244,14 @@ class WebsiteBlockVpnService : VpnService() {
             }
         }
         return null
+    }
+
+    private fun activeBlockedDomains(): Set<String> {
+        val pausedAtHome = LocationRuleManager.shouldAllowBlockedAppsAtHome(this)
+        return blockedWebsites
+            .filter { !pausedAtHome || BlockMode.isAlways(it.blockMode) }
+            .map { it.domain }
+            .toSet()
     }
 
     private fun upstreamDnsServers(): List<InetAddress> {

@@ -6,6 +6,6 @@ import androidx.room.PrimaryKey
 @Entity(tableName = "blocked_apps")
 data class BlockedApp(
     @PrimaryKey
-    val packageName: String
+    val packageName: String,
+    val blockMode: String = BlockMode.HOME_AWARE
 )
-

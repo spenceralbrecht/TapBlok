@@ -18,6 +18,9 @@ interface BlockedAppDao {
     @Query("DELETE FROM blocked_apps")
     suspend fun deleteAll()
 
+    @Query("UPDATE blocked_apps SET blockMode = :blockMode WHERE packageName = :packageName")
+    suspend fun updateBlockMode(packageName: String, blockMode: String)
+
     @Delete
     suspend fun delete(blockedApp: BlockedApp)
 

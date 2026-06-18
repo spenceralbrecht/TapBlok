@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -60,6 +62,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewModelScope
+import com.cj.tapblok.database.BlockMode
 import com.cj.tapblok.database.BlockedWebsite
 import com.cj.tapblok.database.BlockedWebsiteDao
 import com.cj.tapblok.ui.theme.TapBlokTheme
@@ -83,7 +86,7 @@ class WebsiteRulesViewModel(private val blockedWebsiteDao: BlockedWebsiteDao) : 
         }
     }
 
-    fun addWebsite(input: String): Boolean {
+    fun addWebsite(input: String, blockMode: String): Boolean {
         val domain = WebsiteDomainRules.normalizeDomain(input)
         if (domain == null) {
             _inputError.value = "Enter a full domain, like youtube.com"
@@ -91,10 +94,16 @@ class WebsiteRulesViewModel(private val blockedWebsiteDao: BlockedWebsiteDao) : 
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            blockedWebsiteDao.insert(BlockedWebsite(domain))
+            blockedWebsiteDao.insert(BlockedWebsite(domain, blockMode))
         }
         _inputError.value = null
         return true
+    }
+
+    fun updateWebsiteBlockMode(website: BlockedWebsite, blockMode: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            blockedWebsiteDao.updateBlockMode(website.domain, blockMode)
+        }
     }
 
     fun deleteWebsite(website: BlockedWebsite) {
@@ -136,6 +145,7 @@ class WebsiteRulesActivity : ComponentActivity() {
                 val inputError by viewModel.inputError.collectAsState()
                 var vpnReady by remember { mutableStateOf(VpnService.prepare(context) == null) }
                 var domainInput by remember { mutableStateOf("") }
+                var newWebsiteBlockMode by remember { mutableStateOf(BlockMode.HOME_AWARE) }
 
                 val vpnPermissionLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartActivityForResult()
@@ -178,11 +188,13 @@ class WebsiteRulesActivity : ComponentActivity() {
                         websites = websites,
                         domainInput = domainInput,
                         inputError = inputError,
+                        newWebsiteBlockMode = newWebsiteBlockMode,
                         vpnReady = vpnReady,
                         monitoringActive = AppMonitoringService.isRunning,
                         onDomainInputChanged = { domainInput = it },
+                        onNewWebsiteBlockModeChanged = { newWebsiteBlockMode = it },
                         onAddWebsite = {
-                            if (viewModel.addWebsite(domainInput)) {
+                            if (viewModel.addWebsite(domainInput, newWebsiteBlockMode)) {
                                 domainInput = ""
                                 focusManager.clearFocus(force = true)
                                 keyboardController?.hide()
@@ -192,6 +204,7 @@ class WebsiteRulesActivity : ComponentActivity() {
                             }
                         },
                         onDeleteWebsite = viewModel::deleteWebsite,
+                        onWebsiteBlockModeChange = viewModel::updateWebsiteBlockMode,
                         onRequestVpn = {
                             val intent = VpnService.prepare(context)
                             if (intent != null) {
@@ -214,14 +227,19 @@ fun WebsiteRulesScreen(
     websites: List<BlockedWebsite>,
     domainInput: String,
     inputError: String?,
+    newWebsiteBlockMode: String,
     vpnReady: Boolean,
     monitoringActive: Boolean,
     onDomainInputChanged: (String) -> Unit,
+    onNewWebsiteBlockModeChanged: (String) -> Unit,
     onAddWebsite: () -> Unit,
     onDeleteWebsite: (BlockedWebsite) -> Unit,
+    onWebsiteBlockModeChange: (BlockedWebsite, String) -> Unit,
     onRequestVpn: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var modeEditorWebsite by remember { mutableStateOf<BlockedWebsite?>(null) }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
@@ -301,6 +319,22 @@ fun WebsiteRulesScreen(
                             color = MaterialTheme.colorScheme.error
                         )
                     }
+                    Text(
+                        text = "Block mode",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = newWebsiteBlockMode != BlockMode.ALWAYS,
+                            onClick = { onNewWebsiteBlockModeChanged(BlockMode.HOME_AWARE) },
+                            label = { Text("Home-aware") }
+                        )
+                        FilterChip(
+                            selected = newWebsiteBlockMode == BlockMode.ALWAYS,
+                            onClick = { onNewWebsiteBlockModeChanged(BlockMode.ALWAYS) },
+                            label = { Text("Always") }
+                        )
+                    }
                     Button(
                         modifier = Modifier.fillMaxWidth(),
                         onClick = onAddWebsite
@@ -324,16 +358,29 @@ fun WebsiteRulesScreen(
             items(websites, key = { it.domain }) { website ->
                 WebsiteListItem(
                     website = website,
+                    onModeClick = { modeEditorWebsite = website },
                     onDelete = { onDeleteWebsite(website) }
                 )
             }
         }
+    }
+
+    modeEditorWebsite?.let { website ->
+        BlockModePickerSheet(
+            currentMode = website.blockMode,
+            onSelect = { blockMode ->
+                onWebsiteBlockModeChange(website, blockMode)
+                modeEditorWebsite = null
+            },
+            onDismiss = { modeEditorWebsite = null }
+        )
     }
 }
 
 @Composable
 private fun WebsiteListItem(
     website: BlockedWebsite,
+    onModeClick: () -> Unit,
     onDelete: () -> Unit
 ) {
     Row(
@@ -349,13 +396,19 @@ private fun WebsiteListItem(
             tint = MaterialTheme.colorScheme.primary
         )
         Spacer(modifier = Modifier.width(16.dp))
-        Text(
-            text = website.domain,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyLarge,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = website.domain,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            BlockModePill(
+                mode = website.blockMode,
+                onClick = onModeClick
+            )
+        }
         IconButton(onClick = onDelete) {
             Icon(Icons.Default.Delete, contentDescription = "Remove website")
         }

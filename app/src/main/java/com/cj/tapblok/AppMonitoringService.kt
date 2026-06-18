@@ -11,6 +11,8 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.edit
 import com.cj.tapblok.database.AppDatabase
+import com.cj.tapblok.database.BlockMode
+import com.cj.tapblok.database.BlockedApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -23,8 +25,11 @@ class AppMonitoringService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO)
     private lateinit var db: AppDatabase
     private lateinit var prefs: android.content.SharedPreferences
+    @Volatile private var blockedAppEntries: List<BlockedApp> = emptyList()
     @Volatile private var blockedApps: Set<String> = emptySet()
+    @Volatile private var activeBlockedApps: Set<String> = emptySet()
     @Volatile private var hasBlockedWebsites = false
+    @Volatile private var hasAlwaysBlockedWebsites = false
     private var isMonitoring = false
 
     companion object {
@@ -67,8 +72,9 @@ class AppMonitoringService : Service() {
         startForeground(NOTIFICATION_ID, notification)
 
         LocationRuleManager.refreshCurrentHomeState(this, startWhenAway = false) { homeDistance ->
-            if (homeDistance.insideHome == true && LocationRuleManager.shouldAllowBlockedAppsAtHome(this)) {
-                Log.d("AppMonitoringService", "Already inside home radius; monitoring will stay active but allow blocked apps.")
+            val pausedAtHome = homeDistance.insideHome == true && LocationRuleManager.shouldAllowBlockedAppsAtHome(this)
+            if (pausedAtHome && !hasAlwaysBlockedWebsites) {
+                Log.d("AppMonitoringService", "Already inside home radius; monitoring will allow home-aware blocks.")
                 WebsiteBlockVpnService.stop(this)
             } else if (hasBlockedWebsites) {
                 WebsiteBlockVpnService.startIfAllowed(this)
@@ -80,20 +86,35 @@ class AppMonitoringService : Service() {
 
         serviceScope.launch {
             db.blockedAppDao().getAllBlockedApps().collect { list ->
-                blockedApps = list.map { it.packageName }.toSet()
+                blockedAppEntries = list
+                blockedApps = allBlockedAppPackages()
+                val pausedAtHome = LocationRuleManager.shouldAllowBlockedAppsAtHome(this@AppMonitoringService)
+                activeBlockedApps = activeBlockedAppPackages(pausedAtHome)
+
+                if (pausedAtHome) {
+                    HardModeManager.setBlockedPackagesSuspended(
+                        this@AppMonitoringService,
+                        homeAwareBlockedAppPackages(),
+                        suspended = false
+                    )
+                }
                 HardModeManager.setBlockedPackagesSuspended(
                     this@AppMonitoringService,
-                    blockedApps,
-                    suspended = LocationRuleManager.shouldSuspendBlockedPackages(this@AppMonitoringService)
+                    activeBlockedApps,
+                    suspended = true
                 )
-                if (BuildConfig.DEBUG) Log.d("AppMonitoringService", "Blocked apps updated from DB: $blockedApps")
+                if (BuildConfig.DEBUG) {
+                    Log.d("AppMonitoringService", "Blocked apps updated from DB: active=$activeBlockedApps all=$blockedApps")
+                }
             }
         }
 
         serviceScope.launch {
             db.blockedWebsiteDao().getAllBlockedWebsites().collect { list ->
                 hasBlockedWebsites = list.isNotEmpty()
-                if (!hasBlockedWebsites || LocationRuleManager.shouldAllowBlockedAppsAtHome(this@AppMonitoringService)) {
+                hasAlwaysBlockedWebsites = list.any { BlockMode.isAlways(it.blockMode) }
+                val pausedAtHome = LocationRuleManager.shouldAllowBlockedAppsAtHome(this@AppMonitoringService)
+                if (!hasBlockedWebsites || (pausedAtHome && !hasAlwaysBlockedWebsites)) {
                     WebsiteBlockVpnService.stop(this@AppMonitoringService)
                 } else if (!WebsiteBlockVpnService.isRunning) {
                     WebsiteBlockVpnService.startIfAllowed(this@AppMonitoringService)
@@ -111,17 +132,20 @@ class AppMonitoringService : Service() {
                     break
                 }
 
-                if (LocationRuleManager.shouldAllowBlockedAppsAtHome(localContext)) {
+                val pausedAtHome = LocationRuleManager.shouldAllowBlockedAppsAtHome(localContext)
+                activeBlockedApps = activeBlockedAppPackages(pausedAtHome)
+                if (pausedAtHome && !hasAlwaysBlockedWebsites) {
                     WebsiteBlockVpnService.stop(localContext)
                     if (BuildConfig.DEBUG) {
-                        Log.d("AppMonitoringService", "Inside home radius; monitoring remains active without blocking.")
+                        Log.d("AppMonitoringService", "Inside home radius; home-aware blocking is paused.")
                     }
-                    delay(1000)
-                    continue
+                } else if (hasBlockedWebsites && !WebsiteBlockVpnService.isRunning) {
+                    WebsiteBlockVpnService.startIfAllowed(localContext)
                 }
 
-                if (hasBlockedWebsites && !WebsiteBlockVpnService.isRunning) {
-                    WebsiteBlockVpnService.startIfAllowed(localContext)
+                if (pausedAtHome && activeBlockedApps.isEmpty()) {
+                    delay(1000)
+                    continue
                 }
 
                 val foregroundApp = getForegroundApp()
@@ -137,7 +161,7 @@ class AppMonitoringService : Service() {
                     continue
                 }
 
-                if (foregroundApp != null && foregroundApp in blockedApps && foregroundApp != packageName) {
+                if (foregroundApp != null && foregroundApp in activeBlockedApps && foregroundApp != packageName) {
                     val blockIntent = Intent(localContext, BlockingActivity::class.java).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         putExtra("BLOCKED_APP_PACKAGE_NAME", foregroundApp)
@@ -186,4 +210,19 @@ class AppMonitoringService : Service() {
         )
         return appList?.maxByOrNull { it.lastTimeUsed }?.packageName
     }
+
+    private fun allBlockedAppPackages(): Set<String> =
+        blockedAppEntries.map { it.packageName }.toSet()
+
+    private fun homeAwareBlockedAppPackages(): Set<String> =
+        blockedAppEntries
+            .filterNot { BlockMode.isAlways(it.blockMode) }
+            .map { it.packageName }
+            .toSet()
+
+    private fun activeBlockedAppPackages(pausedAtHome: Boolean): Set<String> =
+        blockedAppEntries
+            .filter { !pausedAtHome || BlockMode.isAlways(it.blockMode) }
+            .map { it.packageName }
+            .toSet()
 }
