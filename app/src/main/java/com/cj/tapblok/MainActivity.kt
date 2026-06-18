@@ -109,6 +109,8 @@ fun MainScreen() {
         mutableStateOf(LocationRuleManager.hasBackgroundLocationPermission(context))
     }
     var vpnReady by remember { mutableStateOf(VpnService.prepare(context) == null) }
+    var websiteBlockingEnabled by remember { mutableStateOf(WebsiteBlockVpnService.isEnabled(context)) }
+    var externalVpnActive by remember { mutableStateOf(WebsiteBlockVpnService.hasExternalVpn(context)) }
     var websiteServiceRunning by remember { mutableStateOf(WebsiteBlockVpnService.isRunning) }
     var websiteServiceStarting by remember { mutableStateOf(false) }
     var websiteStartRefreshToken by remember { mutableStateOf(0) }
@@ -129,12 +131,39 @@ fun MainScreen() {
     val alwaysBlockedAppCount = blockedApps.count { BlockMode.isAlways(it.blockMode) }
     val alwaysBlockedWebsiteCount = blockedWebsites.count { BlockMode.isAlways(it.blockMode) }
 
-    fun startWebsiteBlockingFromDashboard() {
-        WebsiteBlockVpnService.startIfAllowed(context)
+    fun refreshWebsiteVpnState() {
+        vpnReady = VpnService.prepare(context) == null
+        websiteBlockingEnabled = WebsiteBlockVpnService.isEnabled(context)
+        externalVpnActive = WebsiteBlockVpnService.hasExternalVpn(context)
         websiteServiceRunning = WebsiteBlockVpnService.isRunning
-        websiteServiceStarting = !websiteServiceRunning
+    }
+
+    fun startWebsiteBlockingFromDashboard() {
+        val status = WebsiteBlockVpnService.startIfAllowed(context)
+        websiteServiceRunning = WebsiteBlockVpnService.isRunning
+        websiteBlockingEnabled = WebsiteBlockVpnService.isEnabled(context)
+        externalVpnActive = WebsiteBlockVpnService.hasExternalVpn(context)
+        websiteServiceStarting = status == WebsiteVpnStartStatus.STARTING && !websiteServiceRunning
         if (websiteServiceStarting) {
             websiteStartRefreshToken += 1
+        }
+        when (status) {
+            WebsiteVpnStartStatus.DISABLED -> Toast.makeText(
+                context,
+                "Website blocking is off so Tailscale can use VPN.",
+                Toast.LENGTH_SHORT
+            ).show()
+            WebsiteVpnStartStatus.EXTERNAL_VPN_ACTIVE -> Toast.makeText(
+                context,
+                "Another VPN is active. Website blocking will stay off.",
+                Toast.LENGTH_SHORT
+            ).show()
+            WebsiteVpnStartStatus.FAILED -> Toast.makeText(
+                context,
+                "Website blocking could not start.",
+                Toast.LENGTH_SHORT
+            ).show()
+            else -> Unit
         }
     }
 
@@ -157,8 +186,7 @@ fun MainScreen() {
             isServiceRunning = isServiceRunning(context, AppMonitoringService::class.java)
         }
         isDeviceOwner = HardModeManager.isDeviceOwner(context)
-        vpnReady = VpnService.prepare(context) == null
-        websiteServiceRunning = WebsiteBlockVpnService.isRunning
+        refreshWebsiteVpnState()
         homeRuleState = LocationRuleManager.state(context)
         blockingPausedAtHome = LocationRuleManager.shouldAllowBlockedAppsAtHome(context)
     }
@@ -191,7 +219,7 @@ fun MainScreen() {
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
-        vpnReady = VpnService.prepare(context) == null
+        refreshWebsiteVpnState()
         if (vpnReady) {
             val monitoringStarted = ensureMonitoringDefaultEnabled(context) ||
                 isServiceRunning(context, AppMonitoringService::class.java)
@@ -206,7 +234,7 @@ fun MainScreen() {
                     Toast.LENGTH_SHORT
                 ).show()
             }
-            websiteServiceRunning = WebsiteBlockVpnService.isRunning
+            refreshWebsiteVpnState()
         }
     }
 
@@ -250,8 +278,7 @@ fun MainScreen() {
                 isIgnoringBatteryOptimizations =
                     BatteryOptimizationManager.isIgnoringBatteryOptimizations(context)
                 isDeviceOwner = HardModeManager.isDeviceOwner(context)
-                vpnReady = VpnService.prepare(context) == null
-                websiteServiceRunning = WebsiteBlockVpnService.isRunning
+                refreshWebsiteVpnState()
                 websiteServiceStarting = false
                 homeRuleState = LocationRuleManager.state(context)
                 blockingPausedAtHome = LocationRuleManager.shouldAllowBlockedAppsAtHome(context)
@@ -273,7 +300,7 @@ fun MainScreen() {
     LaunchedEffect(websiteStartRefreshToken) {
         if (websiteStartRefreshToken > 0) {
             delay(1200)
-            websiteServiceRunning = WebsiteBlockVpnService.isRunning
+            refreshWebsiteVpnState()
             websiteServiceStarting = false
         }
     }
@@ -408,6 +435,8 @@ fun MainScreen() {
                             alwaysBlockedAppCount = alwaysBlockedAppCount,
                             alwaysBlockedWebsiteCount = alwaysBlockedWebsiteCount,
                             vpnReady = vpnReady,
+                            websiteBlockingEnabled = websiteBlockingEnabled,
+                            externalVpnActive = externalVpnActive,
                             websiteServiceRunning = websiteServiceRunning,
                             websiteServiceStarting = websiteServiceStarting,
                             isIgnoringBatteryOptimizations = isIgnoringBatteryOptimizations,
@@ -431,6 +460,10 @@ fun MainScreen() {
                                 context.startActivity(Intent(context, WebsiteRulesActivity::class.java))
                             },
                             onAllowWebsiteBlocking = {
+                                if (!WebsiteBlockVpnService.isEnabled(context)) {
+                                    WebsiteBlockVpnService.setEnabled(context, true)
+                                    websiteBlockingEnabled = true
+                                }
                                 val intent = VpnService.prepare(context)
                                 if (intent != null) {
                                     vpnPermissionLauncher.launch(intent)
@@ -449,7 +482,7 @@ fun MainScreen() {
                                             Toast.LENGTH_SHORT
                                         ).show()
                                     }
-                                    websiteServiceRunning = WebsiteBlockVpnService.isRunning
+                                    refreshWebsiteVpnState()
                                 }
                             },
                             onGrantBattery = {
@@ -850,6 +883,8 @@ private fun ProtectionChecklist(
     alwaysBlockedAppCount: Int,
     alwaysBlockedWebsiteCount: Int,
     vpnReady: Boolean,
+    websiteBlockingEnabled: Boolean,
+    externalVpnActive: Boolean,
     websiteServiceRunning: Boolean,
     websiteServiceStarting: Boolean,
     isIgnoringBatteryOptimizations: Boolean,
@@ -940,6 +975,8 @@ private fun ProtectionChecklist(
                 title = "Website VPN",
                 detail = when {
                     blockedWebsiteCount == 0 -> "Add domains before VPN matters"
+                    !websiteBlockingEnabled -> "Off so Tailscale can use VPN"
+                    externalVpnActive -> "Another VPN is active"
                     blockingPausedAtHome && alwaysBlockedWebsiteCount == 0 -> "Home-aware domains paused"
                     !vpnReady -> "Permission needed"
                     websiteServiceStarting -> "Starting..."
@@ -948,11 +985,15 @@ private fun ProtectionChecklist(
                     else -> "Start monitoring to block domains"
                 },
                 healthy = blockedWebsiteCount > 0 &&
+                    websiteBlockingEnabled &&
+                    !externalVpnActive &&
                     vpnReady &&
                     websiteServiceRunning &&
                     (!blockingPausedAtHome || alwaysBlockedWebsiteCount > 0),
                 actionLabel = when {
                     blockedWebsiteCount == 0 -> "Add"
+                    !websiteBlockingEnabled -> "Enable"
+                    externalVpnActive -> "Review"
                     blockingPausedAtHome && alwaysBlockedWebsiteCount == 0 -> "Review"
                     !vpnReady -> "Allow"
                     websiteServiceStarting -> null
@@ -961,6 +1002,7 @@ private fun ProtectionChecklist(
                 },
                 onAction = when {
                     blockedWebsiteCount == 0 -> onManageWebsites
+                    externalVpnActive -> onManageWebsites
                     blockingPausedAtHome && alwaysBlockedWebsiteCount == 0 -> onHomeRules
                     else -> onAllowWebsiteBlocking
                 }

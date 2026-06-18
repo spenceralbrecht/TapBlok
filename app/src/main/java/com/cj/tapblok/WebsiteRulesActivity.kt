@@ -38,6 +38,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -154,6 +155,8 @@ class WebsiteRulesActivity : ComponentActivity() {
                 val websites by viewModel.websites.collectAsState()
                 val inputError by viewModel.inputError.collectAsState()
                 var vpnReady by remember { mutableStateOf(VpnService.prepare(context) == null) }
+                var websiteBlockingEnabled by remember { mutableStateOf(WebsiteBlockVpnService.isEnabled(context)) }
+                var externalVpnActive by remember { mutableStateOf(WebsiteBlockVpnService.hasExternalVpn(context)) }
                 var domainInput by remember { mutableStateOf("") }
                 var newWebsiteBlockMode by remember { mutableStateOf(BlockMode.HOME_AWARE) }
                 var canRemoveBlockedItems by remember {
@@ -167,19 +170,26 @@ class WebsiteRulesActivity : ComponentActivity() {
                     }
                 }
 
+                fun refreshWebsiteVpnState() {
+                    vpnReady = VpnService.prepare(context) == null
+                    websiteBlockingEnabled = WebsiteBlockVpnService.isEnabled(context)
+                    externalVpnActive = WebsiteBlockVpnService.hasExternalVpn(context)
+                }
+
                 val vpnPermissionLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartActivityForResult()
                 ) {
-                    vpnReady = VpnService.prepare(context) == null
-                    if (vpnReady && AppMonitoringService.isRunning) {
+                    refreshWebsiteVpnState()
+                    if (vpnReady && websiteBlockingEnabled && AppMonitoringService.isRunning) {
                         WebsiteBlockVpnService.startIfAllowed(context)
+                        refreshWebsiteVpnState()
                     }
                 }
 
                 DisposableEffect(lifecycleOwner) {
                     val observer = LifecycleEventObserver { _, event ->
                         if (event == Lifecycle.Event.ON_RESUME) {
-                            vpnReady = VpnService.prepare(context) == null
+                            refreshWebsiteVpnState()
                             refreshRemovalState()
                         }
                     }
@@ -211,17 +221,35 @@ class WebsiteRulesActivity : ComponentActivity() {
                         inputError = inputError,
                         newWebsiteBlockMode = newWebsiteBlockMode,
                         canRemoveBlockedItems = canRemoveBlockedItems,
+                        websiteBlockingEnabled = websiteBlockingEnabled,
+                        externalVpnActive = externalVpnActive,
                         vpnReady = vpnReady,
                         monitoringActive = AppMonitoringService.isRunning,
                         onDomainInputChanged = { domainInput = it },
                         onNewWebsiteBlockModeChanged = { newWebsiteBlockMode = it },
+                        onWebsiteBlockingEnabledChanged = { enabled ->
+                            WebsiteBlockVpnService.setEnabled(context, enabled)
+                            refreshWebsiteVpnState()
+                            if (enabled && AppMonitoringService.isRunning) {
+                                val status = WebsiteBlockVpnService.startIfAllowed(context)
+                                if (status == WebsiteVpnStartStatus.EXTERNAL_VPN_ACTIVE) {
+                                    Toast.makeText(
+                                        context,
+                                        "Another VPN is active. Website blocking will stay off.",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                refreshWebsiteVpnState()
+                            }
+                        },
                         onAddWebsite = {
                             if (viewModel.addWebsite(domainInput, newWebsiteBlockMode)) {
                                 domainInput = ""
                                 focusManager.clearFocus(force = true)
                                 keyboardController?.hide()
-                                if (vpnReady && AppMonitoringService.isRunning) {
+                                if (websiteBlockingEnabled && vpnReady && AppMonitoringService.isRunning) {
                                     WebsiteBlockVpnService.startIfAllowed(context)
+                                    refreshWebsiteVpnState()
                                 }
                             }
                         },
@@ -241,6 +269,8 @@ class WebsiteRulesActivity : ComponentActivity() {
                                 vpnPermissionLauncher.launch(intent)
                             } else {
                                 vpnReady = true
+                                WebsiteBlockVpnService.setEnabled(context, true)
+                                refreshWebsiteVpnState()
                                 Toast.makeText(context, "Website blocking is ready.", Toast.LENGTH_SHORT).show()
                             }
                         },
@@ -259,10 +289,13 @@ fun WebsiteRulesScreen(
     inputError: String?,
     newWebsiteBlockMode: String,
     canRemoveBlockedItems: Boolean,
+    websiteBlockingEnabled: Boolean,
+    externalVpnActive: Boolean,
     vpnReady: Boolean,
     monitoringActive: Boolean,
     onDomainInputChanged: (String) -> Unit,
     onNewWebsiteBlockModeChanged: (String) -> Unit,
+    onWebsiteBlockingEnabledChanged: (Boolean) -> Unit,
     onAddWebsite: () -> Unit,
     onDeleteWebsite: (BlockedWebsite) -> Unit,
     onWebsiteBlockModeChange: (BlockedWebsite, String) -> Unit,
@@ -293,11 +326,18 @@ fun WebsiteRulesScreen(
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (vpnReady) "Website blocking ready" else "VPN permission needed",
+                                text = when {
+                                    !websiteBlockingEnabled -> "Website blocking off"
+                                    externalVpnActive -> "Another VPN is active"
+                                    vpnReady -> "Website blocking ready"
+                                    else -> "VPN permission needed"
+                                },
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
                                 text = when {
+                                    !websiteBlockingEnabled -> "Apps still block. Tailscale can keep the VPN slot."
+                                    externalVpnActive -> "Turn off Tailscale or keep website blocking off."
                                     !vpnReady -> "Needed before websites can be blocked"
                                     monitoringActive -> "Active during this monitoring session"
                                     else -> "Starts with your next monitoring session"
@@ -306,13 +346,17 @@ fun WebsiteRulesScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                text = "Secure DNS in browsers can bypass domain blocking.",
+                                text = "Website blocking uses Android's VPN slot, so it cannot run with Tailscale.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        Switch(
+                            checked = websiteBlockingEnabled,
+                            onCheckedChange = onWebsiteBlockingEnabledChanged
+                        )
                     }
-                    if (!vpnReady) {
+                    if (websiteBlockingEnabled && !vpnReady && !externalVpnActive) {
                         Button(
                             modifier = Modifier.fillMaxWidth(),
                             onClick = onRequestVpn

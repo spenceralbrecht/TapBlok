@@ -25,6 +25,15 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
+enum class WebsiteVpnStartStatus {
+    ALREADY_RUNNING,
+    STARTING,
+    DISABLED,
+    NEEDS_PERMISSION,
+    EXTERNAL_VPN_ACTIVE,
+    FAILED
+}
+
 class WebsiteBlockVpnService : VpnService() {
     private val serviceScope = CoroutineScope(Dispatchers.IO)
     private lateinit var db: AppDatabase
@@ -42,6 +51,8 @@ class WebsiteBlockVpnService : VpnService() {
         private const val VPN_DNS_ADDRESS = "10.111.0.1"
         private const val VPN_ADDRESS_V6 = "fd00:111:111::2"
         private const val VPN_DNS_ADDRESS_V6 = "fd00:111:111::1"
+        private const val PREFS = "app_prefs"
+        private const val KEY_WEBSITE_BLOCKING_ENABLED = "website_blocking_enabled"
         private val FALLBACK_UPSTREAM_DNS = listOf("1.1.1.1", "8.8.8.8")
 
         @Volatile
@@ -50,9 +61,33 @@ class WebsiteBlockVpnService : VpnService() {
         @Volatile
         private var isStarting = false
 
-        fun startIfAllowed(context: Context) {
-            if (isRunning || isStarting) return
-            if (prepare(context) != null) return
+        fun isEnabled(context: Context): Boolean =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getBoolean(KEY_WEBSITE_BLOCKING_ENABLED, true)
+
+        fun setEnabled(context: Context, enabled: Boolean) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_WEBSITE_BLOCKING_ENABLED, enabled)
+                .apply()
+            if (!enabled) stop(context)
+        }
+
+        fun hasExternalVpn(context: Context): Boolean {
+            if (isRunning || isStarting) return false
+            val connectivityManager =
+                context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            return connectivityManager.allNetworks.any { network ->
+                connectivityManager.getNetworkCapabilities(network)
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            }
+        }
+
+        fun startIfAllowed(context: Context): WebsiteVpnStartStatus {
+            if (isRunning || isStarting) return WebsiteVpnStartStatus.ALREADY_RUNNING
+            if (!isEnabled(context)) return WebsiteVpnStartStatus.DISABLED
+            if (prepare(context) != null) return WebsiteVpnStartStatus.NEEDS_PERMISSION
+            if (hasExternalVpn(context)) return WebsiteVpnStartStatus.EXTERNAL_VPN_ACTIVE
             val intent = Intent(context, WebsiteBlockVpnService::class.java)
             try {
                 isStarting = true
@@ -61,9 +96,11 @@ class WebsiteBlockVpnService : VpnService() {
                 } else {
                     context.startService(intent)
                 }
+                return WebsiteVpnStartStatus.STARTING
             } catch (exception: RuntimeException) {
                 isStarting = false
                 Log.w(TAG, "Unable to start website blocking VPN.", exception)
+                return WebsiteVpnStartStatus.FAILED
             }
         }
 

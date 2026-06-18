@@ -70,7 +70,9 @@ fun ensureMonitoringDefaultEnabled(context: Context): Boolean {
 }
 
 fun canRunWebsiteBlockingService(context: Context): Boolean =
-    VpnService.prepare(context) == null
+    WebsiteBlockVpnService.isEnabled(context) &&
+        VpnService.prepare(context) == null &&
+        !WebsiteBlockVpnService.hasExternalVpn(context)
 
 fun startWebsiteBlockingIfReady(context: Context) {
     if (!AppMonitoringService.isRunning || !canRunWebsiteBlockingService(context)) return
