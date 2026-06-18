@@ -278,6 +278,14 @@ object LocationRuleManager {
             !isHomeSleepBlockActive(currentState)
     }
 
+    fun canRemoveBlockedItems(context: Context): Boolean = canRemoveBlockedItems(state(context))
+
+    internal fun canRemoveBlockedItems(state: HomeRuleState): Boolean =
+        state.enabled &&
+            state.latitude != null &&
+            state.longitude != null &&
+            state.insideHome
+
     fun shouldSuspendBlockedPackages(context: Context): Boolean = !shouldAllowBlockedAppsAtHome(context)
 
     fun isHomeSleepBlockActive(context: Context): Boolean = isHomeSleepBlockActive(state(context))

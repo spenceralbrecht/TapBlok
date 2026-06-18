@@ -3,6 +3,7 @@ package com.cj.tapblok
 import android.app.Application
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -17,6 +18,7 @@ import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.RemoveDone
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,8 +29,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
@@ -93,7 +98,11 @@ class AppSelectionViewModel(private val blockedAppDao: BlockedAppDao, private va
         }
     }
 
-    fun onAppSelectionChanged(app: AppInfo, isSelected: Boolean) {
+    fun onAppSelectionChanged(app: AppInfo, isSelected: Boolean): Boolean {
+        if (!isSelected && !LocationRuleManager.canRemoveBlockedItems(application)) {
+            return false
+        }
+
         viewModelScope.launch(Dispatchers.IO) {
             if (isSelected) {
                 blockedAppDao.insert(BlockedApp(packageName = app.packageName))
@@ -101,6 +110,7 @@ class AppSelectionViewModel(private val blockedAppDao: BlockedAppDao, private va
                 blockedAppDao.delete(BlockedApp(packageName = app.packageName))
             }
         }
+        return true
     }
 
     fun onAppBlockModeChanged(app: AppInfo, blockMode: String) {
@@ -116,10 +126,15 @@ class AppSelectionViewModel(private val blockedAppDao: BlockedAppDao, private va
         }
     }
 
-    fun unselectAllApps() {
+    fun unselectAllApps(): Boolean {
+        if (!LocationRuleManager.canRemoveBlockedItems(application)) {
+            return false
+        }
+
         viewModelScope.launch(Dispatchers.IO) {
             blockedAppDao.deleteAll()
         }
+        return true
     }
 }
 
@@ -147,7 +162,30 @@ class AppSelectionActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             TapBlokTheme {
+                val context = LocalContext.current
+                val lifecycleOwner = LocalLifecycleOwner.current
                 val appList by viewModel.apps.collectAsState()
+                var canRemoveBlockedItems by remember {
+                    mutableStateOf(LocationRuleManager.canRemoveBlockedItems(context))
+                }
+
+                fun refreshRemovalState() {
+                    canRemoveBlockedItems = LocationRuleManager.canRemoveBlockedItems(context)
+                    LocationRuleManager.refreshCurrentHomeState(context, startWhenAway = false) {
+                        canRemoveBlockedItems = LocationRuleManager.canRemoveBlockedItems(context)
+                    }
+                }
+
+                DisposableEffect(lifecycleOwner) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) {
+                            refreshRemovalState()
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                }
+
                 Scaffold(
                     topBar = {
                         TopAppBar(
@@ -167,7 +205,17 @@ class AppSelectionActivity : ComponentActivity() {
                                 IconButton(onClick = { viewModel.selectAllApps() }) {
                                     Icon(Icons.Default.Checklist, contentDescription = "Select all apps")
                                 }
-                                IconButton(onClick = { viewModel.unselectAllApps() }) {
+                                IconButton(
+                                    onClick = {
+                                        if (!viewModel.unselectAllApps()) {
+                                            Toast.makeText(
+                                                context,
+                                                "Go home to remove blocked apps.",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                ) {
                                     Icon(Icons.Default.RemoveDone, contentDescription = "Clear selected apps")
                                 }
                             }
@@ -176,8 +224,15 @@ class AppSelectionActivity : ComponentActivity() {
                 ) { padding ->
                     AppSelectionScreen(
                         apps = appList,
+                        canRemoveBlockedItems = canRemoveBlockedItems,
                         onAppCheckedChange = { app, isSelected ->
-                            viewModel.onAppSelectionChanged(app, isSelected)
+                            if (!viewModel.onAppSelectionChanged(app, isSelected)) {
+                                Toast.makeText(
+                                    context,
+                                    "Go home to remove blocked apps.",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
                         },
                         onAppBlockModeChange = { app, blockMode ->
                             viewModel.onAppBlockModeChanged(app, blockMode)
@@ -193,6 +248,7 @@ class AppSelectionActivity : ComponentActivity() {
 @Composable
 fun AppSelectionScreen(
     apps: List<AppInfo>,
+    canRemoveBlockedItems: Boolean,
     onAppCheckedChange: (AppInfo, Boolean) -> Unit,
     onAppBlockModeChange: (AppInfo, String) -> Unit,
     modifier: Modifier = Modifier
@@ -203,9 +259,21 @@ fun AppSelectionScreen(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
     ) {
+        if (!canRemoveBlockedItems && apps.any { it.isSelected }) {
+            item {
+                Text(
+                    text = "Removal locked until you are home.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp)
+                )
+            }
+        }
+
         items(apps, key = { it.packageName }) { app ->
             AppListItem(
                 app = app,
+                canRemoveBlockedItems = canRemoveBlockedItems,
                 onCheckedChange = { isSelected ->
                     onAppCheckedChange(app, isSelected)
                 },
@@ -231,15 +299,25 @@ fun AppSelectionScreen(
 @Composable
 fun AppListItem(
     app: AppInfo,
+    canRemoveBlockedItems: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     onModeClick: () -> Unit
 ) {
     val context = LocalContext.current
+    val removalLocked = app.isSelected && !canRemoveBlockedItems
+    fun handleCheckedChange(isSelected: Boolean) {
+        if (removalLocked && !isSelected) {
+            Toast.makeText(context, "Go home to remove blocked apps.", Toast.LENGTH_SHORT).show()
+        } else {
+            onCheckedChange(isSelected)
+        }
+    }
+
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!app.isSelected) }
+            .clickable { handleCheckedChange(!app.isSelected) }
             .padding(vertical = 8.dp, horizontal = 8.dp)
     ) {
         Image(
@@ -270,7 +348,7 @@ fun AppListItem(
         Spacer(modifier = Modifier.width(16.dp))
         Checkbox(
             checked = app.isSelected,
-            onCheckedChange = onCheckedChange,
+            onCheckedChange = ::handleCheckedChange,
         )
     }
 }

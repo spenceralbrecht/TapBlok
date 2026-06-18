@@ -71,7 +71,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
-class WebsiteRulesViewModel(private val blockedWebsiteDao: BlockedWebsiteDao) : ViewModel() {
+class WebsiteRulesViewModel(
+    private val blockedWebsiteDao: BlockedWebsiteDao,
+    private val application: Application
+) : ViewModel() {
     private val _websites = MutableStateFlow<List<BlockedWebsite>>(emptyList())
     val websites: StateFlow<List<BlockedWebsite>> = _websites
 
@@ -106,20 +109,26 @@ class WebsiteRulesViewModel(private val blockedWebsiteDao: BlockedWebsiteDao) : 
         }
     }
 
-    fun deleteWebsite(website: BlockedWebsite) {
+    fun deleteWebsite(website: BlockedWebsite): Boolean {
+        if (!LocationRuleManager.canRemoveBlockedItems(application)) {
+            return false
+        }
+
         viewModelScope.launch(Dispatchers.IO) {
             blockedWebsiteDao.delete(website)
         }
+        return true
     }
 }
 
 class WebsiteRulesViewModelFactory(
-    private val blockedWebsiteDao: BlockedWebsiteDao
+    private val blockedWebsiteDao: BlockedWebsiteDao,
+    private val application: Application
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(WebsiteRulesViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return WebsiteRulesViewModel(blockedWebsiteDao) as T
+            return WebsiteRulesViewModel(blockedWebsiteDao, application) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
@@ -128,7 +137,8 @@ class WebsiteRulesViewModelFactory(
 class WebsiteRulesActivity : ComponentActivity() {
     private val viewModel: WebsiteRulesViewModel by viewModels {
         WebsiteRulesViewModelFactory(
-            (application as App).database.blockedWebsiteDao()
+            (application as App).database.blockedWebsiteDao(),
+            application
         )
     }
 
@@ -146,6 +156,16 @@ class WebsiteRulesActivity : ComponentActivity() {
                 var vpnReady by remember { mutableStateOf(VpnService.prepare(context) == null) }
                 var domainInput by remember { mutableStateOf("") }
                 var newWebsiteBlockMode by remember { mutableStateOf(BlockMode.HOME_AWARE) }
+                var canRemoveBlockedItems by remember {
+                    mutableStateOf(LocationRuleManager.canRemoveBlockedItems(context))
+                }
+
+                fun refreshRemovalState() {
+                    canRemoveBlockedItems = LocationRuleManager.canRemoveBlockedItems(context)
+                    LocationRuleManager.refreshCurrentHomeState(context, startWhenAway = false) {
+                        canRemoveBlockedItems = LocationRuleManager.canRemoveBlockedItems(context)
+                    }
+                }
 
                 val vpnPermissionLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartActivityForResult()
@@ -160,6 +180,7 @@ class WebsiteRulesActivity : ComponentActivity() {
                     val observer = LifecycleEventObserver { _, event ->
                         if (event == Lifecycle.Event.ON_RESUME) {
                             vpnReady = VpnService.prepare(context) == null
+                            refreshRemovalState()
                         }
                     }
                     lifecycleOwner.lifecycle.addObserver(observer)
@@ -189,6 +210,7 @@ class WebsiteRulesActivity : ComponentActivity() {
                         domainInput = domainInput,
                         inputError = inputError,
                         newWebsiteBlockMode = newWebsiteBlockMode,
+                        canRemoveBlockedItems = canRemoveBlockedItems,
                         vpnReady = vpnReady,
                         monitoringActive = AppMonitoringService.isRunning,
                         onDomainInputChanged = { domainInput = it },
@@ -203,7 +225,15 @@ class WebsiteRulesActivity : ComponentActivity() {
                                 }
                             }
                         },
-                        onDeleteWebsite = viewModel::deleteWebsite,
+                        onDeleteWebsite = { website ->
+                            if (!viewModel.deleteWebsite(website)) {
+                                Toast.makeText(
+                                    context,
+                                    "Go home to remove blocked websites.",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        },
                         onWebsiteBlockModeChange = viewModel::updateWebsiteBlockMode,
                         onRequestVpn = {
                             val intent = VpnService.prepare(context)
@@ -228,6 +258,7 @@ fun WebsiteRulesScreen(
     domainInput: String,
     inputError: String?,
     newWebsiteBlockMode: String,
+    canRemoveBlockedItems: Boolean,
     vpnReady: Boolean,
     monitoringActive: Boolean,
     onDomainInputChanged: (String) -> Unit,
@@ -355,9 +386,21 @@ fun WebsiteRulesScreen(
                 )
             }
         } else {
+            if (!canRemoveBlockedItems) {
+                item {
+                    Text(
+                        text = "Removal locked until you are home.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
+                    )
+                }
+            }
+
             items(websites, key = { it.domain }) { website ->
                 WebsiteListItem(
                     website = website,
+                    canRemoveBlockedItems = canRemoveBlockedItems,
                     onModeClick = { modeEditorWebsite = website },
                     onDelete = { onDeleteWebsite(website) }
                 )
@@ -380,9 +423,11 @@ fun WebsiteRulesScreen(
 @Composable
 private fun WebsiteListItem(
     website: BlockedWebsite,
+    canRemoveBlockedItems: Boolean,
     onModeClick: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val context = LocalContext.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -409,7 +454,19 @@ private fun WebsiteListItem(
                 onClick = onModeClick
             )
         }
-        IconButton(onClick = onDelete) {
+        IconButton(
+            onClick = {
+                if (canRemoveBlockedItems) {
+                    onDelete()
+                } else {
+                    Toast.makeText(
+                        context,
+                        "Go home to remove blocked websites.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        ) {
             Icon(Icons.Default.Delete, contentDescription = "Remove website")
         }
     }

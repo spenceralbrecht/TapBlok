@@ -30,4 +30,46 @@ class LocationRuleManagerTest {
         assertTrue(LocationRuleManager.isMinuteInSleepBlockWindow(12 * 60, start, end))
         assertFalse(LocationRuleManager.isMinuteInSleepBlockWindow(17 * 60, start, end))
     }
+
+    @Test
+    fun blockedItemsCanOnlyBeRemovedWhenHomeIsEnabledSavedAndInside() {
+        assertTrue(
+            LocationRuleManager.canRemoveBlockedItems(
+                homeRuleState(enabled = true, hasHome = true, insideHome = true)
+            )
+        )
+
+        assertFalse(
+            LocationRuleManager.canRemoveBlockedItems(
+                homeRuleState(enabled = true, hasHome = true, insideHome = false)
+            )
+        )
+        assertFalse(
+            LocationRuleManager.canRemoveBlockedItems(
+                homeRuleState(enabled = false, hasHome = true, insideHome = true)
+            )
+        )
+        assertFalse(
+            LocationRuleManager.canRemoveBlockedItems(
+                homeRuleState(enabled = true, hasHome = false, insideHome = true)
+            )
+        )
+    }
+
+    private fun homeRuleState(
+        enabled: Boolean,
+        hasHome: Boolean,
+        insideHome: Boolean
+    ): HomeRuleState = HomeRuleState(
+        enabled = enabled,
+        latitude = if (hasHome) 37.0 else null,
+        longitude = if (hasHome) -122.0 else null,
+        radiusMeters = 250f,
+        insideHome = insideHome,
+        label = null,
+        lastDistanceMeters = null,
+        sleepBlockEnabled = true,
+        sleepBlockStartMinutes = 22 * 60,
+        sleepBlockEndMinutes = 5 * 60
+    )
 }
