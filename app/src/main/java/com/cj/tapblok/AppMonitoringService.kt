@@ -186,6 +186,7 @@ class AppMonitoringService : Service() {
         super.onDestroy()
         isRunning = false
         WebsiteBlockVpnService.stop(this)
+        BlockingOverlayController.hide(this)
         HardModeManager.setBlockedPackagesSuspended(this, blockedApps, suspended = false)
         serviceScope.cancel()
         Log.d("AppMonitoringService", "Service has been destroyed.")

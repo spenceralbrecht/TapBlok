@@ -31,6 +31,7 @@ class BlockedWindowAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        currentService = this
         serviceScope.launch {
             AppDatabase.getDatabase(this@BlockedWindowAccessibilityService)
                 .blockedAppDao()
@@ -53,6 +54,8 @@ class BlockedWindowAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (currentService === this) currentService = null
+        BlockingOverlayController.hide(this)
         serviceScope.cancel()
     }
 
@@ -97,7 +100,10 @@ class BlockedWindowAccessibilityService : AccessibilityService() {
             .putInt("blocked_app_attempts", attempts + 1)
             .apply()
 
+        val overlayShown = BlockingOverlayController.show(this, packageName)
         performGlobalAction(GLOBAL_ACTION_HOME)
+        if (overlayShown) return
+
         mainHandler.postDelayed({
             val blockIntent = Intent(this, BlockingActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -107,8 +113,26 @@ class BlockedWindowAccessibilityService : AccessibilityService() {
         }, BLOCK_SCREEN_DELAY_MS)
     }
 
+    private fun visiblePackages(): Set<String> =
+        buildSet {
+            rootInActiveWindow?.packageName?.toString()?.let(::add)
+            windows.forEach { window ->
+                window.root?.packageName?.toString()?.let(::add)
+            }
+        }
+
     companion object {
         private const val BLOCK_THROTTLE_MS = 1500L
         private const val BLOCK_SCREEN_DELAY_MS = 120L
+
+        @Volatile
+        private var currentService: BlockedWindowAccessibilityService? = null
+
+        fun isPackageWindowVisible(packageName: String): Boolean =
+            currentService?.visiblePackages()?.contains(packageName) == true
+
+        fun performHomeAction() {
+            currentService?.performGlobalAction(GLOBAL_ACTION_HOME)
+        }
     }
 }

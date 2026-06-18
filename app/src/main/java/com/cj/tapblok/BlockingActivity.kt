@@ -50,13 +50,10 @@ class BlockingActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         blockedPackageName = intent.blockedPackageName
+        currentActivity = this
 
         val goHome = {
-            val intent = Intent(Intent.ACTION_MAIN).apply {
-                addCategory(Intent.CATEGORY_HOME)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            startActivity(intent)
+            BlockingOverlayController.goHome(this, blockedPackageName)
             finish()
         }
 
@@ -69,7 +66,12 @@ class BlockingActivity : ComponentActivity() {
                 BlockingScreen(
                     packageName = blockedPackageName,
                     onGoHomeClick = goHome,
-                    onAllowedHome = { finish() }
+                    onAllowedHome = { allowedPackageName ->
+                        BlockingOverlayController.hideIfShowing(allowedPackageName)
+                        if (blockedPackageName == allowedPackageName) {
+                            finish()
+                        }
+                    }
                 )
             }
         }
@@ -81,15 +83,34 @@ class BlockingActivity : ComponentActivity() {
         blockedPackageName = intent.blockedPackageName
     }
 
+    override fun onDestroy() {
+        if (currentActivity === this) currentActivity = null
+        super.onDestroy()
+    }
+
     private val Intent.blockedPackageName: String
         get() = getStringExtra("BLOCKED_APP_PACKAGE_NAME") ?: "An app"
+
+    companion object {
+        @Volatile
+        private var currentActivity: BlockingActivity? = null
+
+        fun finishIfShowing(packageName: String) {
+            currentActivity?.runOnUiThread {
+                val activity = currentActivity ?: return@runOnUiThread
+                if (activity.blockedPackageName == packageName) {
+                    activity.finish()
+                }
+            }
+        }
+    }
 }
 
 @Composable
 fun BlockingScreen(
     packageName: String,
     onGoHomeClick: () -> Unit,
-    onAllowedHome: () -> Unit
+    onAllowedHome: (String) -> Unit
 ) {
     val context = LocalContext.current
 
@@ -143,7 +164,7 @@ fun BlockingScreen(
             LocationRuleManager.refreshCurrentHomeState(context, startWhenAway = false) { distanceState ->
                 if (distanceState.insideHome == true && LocationRuleManager.shouldAllowBlockedAppsAtHome(context)) {
                     LocationRuleManager.rememberAllowedHomeUnlock(context, packageName)
-                    onAllowedHome()
+                    onAllowedHome(packageName)
                 } else {
                     isCheckingHome = false
                     homeDistanceText = formatHomeDistance(distanceState)
