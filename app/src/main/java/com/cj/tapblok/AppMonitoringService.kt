@@ -2,6 +2,7 @@ package com.cj.tapblok
 
 import android.app.PendingIntent
 import android.app.Service
+import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
@@ -200,9 +201,25 @@ class AppMonitoringService : Service() {
         return null
     }
 
+    @Suppress("DEPRECATION")
     private fun getForegroundApp(): String? {
         val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val time = System.currentTimeMillis()
+        val recentForegroundApp = usageStatsManager.queryEvents(time - 3000, time)?.let { events ->
+            val event = UsageEvents.Event()
+            var latestPackage: String? = null
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event)
+                if (event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND ||
+                    event.eventType == UsageEvents.Event.ACTIVITY_RESUMED
+                ) {
+                    latestPackage = event.packageName
+                }
+            }
+            latestPackage
+        }
+        if (recentForegroundApp != null) return recentForegroundApp
+
         val appList = usageStatsManager.queryUsageStats(
             UsageStatsManager.INTERVAL_DAILY,
             time - 1000 * 10,

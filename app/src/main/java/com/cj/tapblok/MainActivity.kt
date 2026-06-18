@@ -96,6 +96,9 @@ fun MainScreen() {
 
     var hasUsagePermission by remember { mutableStateOf(hasUsageStatsPermission(context)) }
     var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+    var floatingWindowBlockingEnabled by remember {
+        mutableStateOf(hasFloatingWindowBlockingPermission(context))
+    }
     var isServiceRunning by remember { mutableStateOf(isServiceRunning(context, AppMonitoringService::class.java)) }
     var isDeviceOwner by remember { mutableStateOf(HardModeManager.isDeviceOwner(context)) }
     var blockedAppAttempts by remember { mutableStateOf(0) }
@@ -179,6 +182,7 @@ fun MainScreen() {
     ) {
         hasUsagePermission = hasUsageStatsPermission(context)
         canDrawOverlays = Settings.canDrawOverlays(context)
+        floatingWindowBlockingEnabled = hasFloatingWindowBlockingPermission(context)
         if (hasUsagePermission && canDrawOverlays) {
             isServiceRunning = ensureMonitoringDefaultEnabled(context) ||
                 isServiceRunning(context, AppMonitoringService::class.java)
@@ -262,6 +266,7 @@ fun MainScreen() {
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasUsagePermission = hasUsageStatsPermission(context)
                 canDrawOverlays = Settings.canDrawOverlays(context)
+                floatingWindowBlockingEnabled = hasFloatingWindowBlockingPermission(context)
                 if (hasUsagePermission && canDrawOverlays) {
                     isServiceRunning = ensureMonitoringDefaultEnabled(context) ||
                         isServiceRunning(context, AppMonitoringService::class.java)
@@ -430,6 +435,7 @@ fun MainScreen() {
                             isServiceRunning = isServiceRunning,
                             hasUsagePermission = hasUsagePermission,
                             canDrawOverlays = canDrawOverlays,
+                            hasFloatingWindowBlockingPermission = floatingWindowBlockingEnabled,
                             blockedAppCount = blockedApps.size,
                             blockedWebsiteCount = blockedWebsites.size,
                             alwaysBlockedAppCount = alwaysBlockedAppCount,
@@ -452,6 +458,9 @@ fun MainScreen() {
                             },
                             onGrantOverlay = {
                                 settingsLauncher.launch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
+                            },
+                            onGrantStrongBlocking = {
+                                settingsLauncher.launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                             },
                             onManageApps = {
                                 context.startActivity(Intent(context, AppSelectionActivity::class.java))
@@ -878,6 +887,7 @@ private fun ProtectionChecklist(
     isServiceRunning: Boolean,
     hasUsagePermission: Boolean,
     canDrawOverlays: Boolean,
+    hasFloatingWindowBlockingPermission: Boolean,
     blockedAppCount: Int,
     blockedWebsiteCount: Int,
     alwaysBlockedAppCount: Int,
@@ -895,6 +905,7 @@ private fun ProtectionChecklist(
     onStartMonitoring: () -> Unit,
     onGrantUsage: () -> Unit,
     onGrantOverlay: () -> Unit,
+    onGrantStrongBlocking: () -> Unit,
     onManageApps: () -> Unit,
     onManageWebsites: () -> Unit,
     onAllowWebsiteBlocking: () -> Unit,
@@ -958,6 +969,17 @@ private fun ProtectionChecklist(
                 healthy = canDrawOverlays,
                 actionLabel = if (canDrawOverlays) null else "Grant",
                 onAction = onGrantOverlay
+            )
+            ProtectionCheckRow(
+                title = "Floating windows",
+                detail = if (hasFloatingWindowBlockingPermission) {
+                    "Bubbles and floating windows covered"
+                } else {
+                    "Enable to catch bubbles like WhatsApp"
+                },
+                healthy = hasFloatingWindowBlockingPermission,
+                actionLabel = if (hasFloatingWindowBlockingPermission) null else "Enable",
+                onAction = onGrantStrongBlocking
             )
             ProtectionCheckRow(
                 title = "Blocked apps",

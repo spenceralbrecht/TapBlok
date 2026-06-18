@@ -1,6 +1,7 @@
 package com.cj.tapblok
 
 import android.app.AppOpsManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.app.Service
@@ -30,6 +31,27 @@ fun isServiceRunning(@Suppress("UNUSED_PARAMETER") context: Context, serviceClas
 
 fun canRunMonitoringService(context: Context): Boolean =
     hasUsageStatsPermission(context) && Settings.canDrawOverlays(context)
+
+fun hasFloatingWindowBlockingPermission(context: Context): Boolean {
+    val accessibilityEnabled = Settings.Secure.getInt(
+        context.contentResolver,
+        Settings.Secure.ACCESSIBILITY_ENABLED,
+        0
+    ) == 1
+    if (!accessibilityEnabled) return false
+
+    val expected = ComponentName(context, BlockedWindowAccessibilityService::class.java)
+    val enabledServices = Settings.Secure.getString(
+        context.contentResolver,
+        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+    ).orEmpty()
+
+    return enabledServices.split(':').any { flattenedName ->
+        val component = ComponentName.unflattenFromString(flattenedName)
+        component?.packageName == expected.packageName &&
+            component.className == expected.className
+    }
+}
 
 fun startMonitoringService(context: Context): Boolean {
     val intent = Intent(context, AppMonitoringService::class.java)

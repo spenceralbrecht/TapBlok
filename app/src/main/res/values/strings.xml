@@ -9,4 +9,5 @@
     <string name="title_activity_shortcut_handler">Start Monitoring</string>
     <string name="shortcut_start_session_disabled">HomeBlok monitoring shortcut is currently unavailable.</string>
     <string name="device_admin_description">Prevents casual uninstall and supports hard app blocking when HomeBlok is provisioned as device owner.</string>
+    <string name="accessibility_service_description">Detects blocked apps in bubbles, floating windows, and other interactive windows so HomeBlok can show the block screen.</string>
 </resources>
